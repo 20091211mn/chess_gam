@@ -997,8 +997,8 @@ class _GamePageState extends State<GamePage> {
             const SizedBox(height: 6),
             _playerBar(!bottomWhite),
             const SizedBox(height: 6),
-            LayoutBuilder(builder: (c, _) {
-              final bs = c.maxWidth - 18;
+            LayoutBuilder(builder: (ctx, cons) {
+              final bs = cons.maxWidth - 18;
               return SizedBox(
                 height: bs,
                 child: Row(children: [
