@@ -16,6 +16,13 @@ const kGreen = Color(0xFF81B64C);
 const kGreenDark = Color(0xFF45753C);
 const kLight = Color(0xFFEBECD0);
 const kDark = Color(0xFF739552);
+int gTheme = 0;
+const List<List<Color>> kThemes = [
+  [Color(0xFFEBECD0), Color(0xFF739552)],
+  [Color(0xFFF0D9B5), Color(0xFFB58863)],
+  [Color(0xFFDEE3E6), Color(0xFF8CA2AD)],
+  [Color(0xFFEEEEEE), Color(0xFF9B7EBD)],
+];
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -94,12 +101,17 @@ class MenuPage extends StatefulWidget {
 
 class _MenuPageState extends State<MenuPage> {
   bool playWhite = true;
+  int minutes = 10;
 
   void _go(bool ai, int depth, String level) => Navigator.push(
       context,
       MaterialPageRoute(
           builder: (_) => GamePage(
-              vsAI: ai, depth: depth, level: level, playerWhite: playWhite)));
+              vsAI: ai,
+              depth: depth,
+              level: level,
+              playerWhite: playWhite,
+              minutes: minutes)));
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -136,6 +148,28 @@ class _MenuPageState extends State<MenuPage> {
                   const SizedBox(width: 10),
                   _side(false),
                 ]),
+              ),
+              Container(
+                margin: const EdgeInsets.only(bottom: 14),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                    color: kPanel, borderRadius: BorderRadius.circular(10)),
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('وقت اللعب لكل لاعب',
+                          style: TextStyle(fontSize: 15)),
+                      const SizedBox(height: 8),
+                      Wrap(spacing: 8, children: [
+                        for (final m in [1, 3, 5, 10, 15, 30])
+                          ChoiceChip(
+                            label: Text('$m د'),
+                            selected: minutes == m,
+                            selectedColor: kGreen,
+                            onSelected: (_) => setState(() => minutes = m),
+                          ),
+                      ]),
+                    ]),
               ),
               _big('مبتدئ', 'ضد الكمبيوتر - سهل', () => _go(true, 1, 'مبتدئ'),
                   alt: true),
@@ -587,13 +621,15 @@ class GamePage extends StatefulWidget {
   final String level;
   final bool playerWhite;
   final Net? net;
+  final int minutes;
   const GamePage(
       {super.key,
       required this.vsAI,
       required this.depth,
       required this.level,
       required this.playerWhite,
-      this.net});
+      this.net,
+      this.minutes = 10});
   @override
   State<GamePage> createState() => _GamePageState();
 }
@@ -611,7 +647,8 @@ class _GamePageState extends State<GamePage> {
   bool resultShown = false;
   bool showBest = false;
   int epoch = 0;
-  int whiteSecs = 600, blackSecs = 600;
+  late int whiteSecs, blackSecs;
+  String? hintA, hintB;
   final ScrollController _sc = ScrollController();
 
   bool get online => widget.net != null;
@@ -622,6 +659,7 @@ class _GamePageState extends State<GamePage> {
   void initState() {
     super.initState();
     flipped = !widget.playerWhite;
+    whiteSecs = blackSecs = widget.minutes * 60;
     _rebuild();
     _tick();
     widget.net?.setHandler(_onNet);
@@ -756,10 +794,11 @@ class _GamePageState extends State<GamePage> {
       selected = null;
       targets = [];
       lastFrom = lastTo = null;
-      whiteSecs = blackSecs = 600;
+      whiteSecs = blackSecs = widget.minutes * 60;
       thinking = false;
       resultShown = false;
       showBest = false;
+      hintA = hintB = null;
       reviews = [];
       _rebuild();
     });
@@ -903,6 +942,7 @@ class _GamePageState extends State<GamePage> {
       selected = null;
       targets = [];
       showBest = false;
+      hintA = hintB = null;
     });
     _scrollMoves();
     _analyze(fenBefore, rev, from, to, promo);
@@ -923,6 +963,19 @@ class _GamePageState extends State<GamePage> {
       rev.bestFrom = r['bestFrom'] as String;
       rev.bestTo = r['bestTo'] as String;
       rev.grade = _gradeOf(rev.loss, r['gap'] as int, r['n'] as int);
+    });
+  }
+
+  Future<void> _hint() async {
+    if (thinking || game.game_over || resultShown || _aiToMove) return;
+    final my = epoch;
+    final r = await compute(_bestMoveTask, {'fen': game.fen, 'depth': 3});
+    if (!mounted || my != epoch || r == null) return;
+    setState(() {
+      hintA = r['from'];
+      hintB = r['to'];
+      selected = null;
+      targets = [];
     });
   }
 
@@ -958,6 +1011,7 @@ class _GamePageState extends State<GamePage> {
       thinking = false;
       resultShown = false;
       showBest = false;
+      hintA = hintB = null;
       _rebuild();
     });
     _maybeAI();
@@ -1340,8 +1394,10 @@ class _GamePageState extends State<GamePage> {
           }
         }
         final lastRev = reviews.isEmpty ? null : reviews.last;
-        final bestA = (showBest && lastRev != null) ? lastRev.bestFrom : null;
-        final bestB = (showBest && lastRev != null) ? lastRev.bestTo : null;
+        final bestA =
+            hintA ?? ((showBest && lastRev != null) ? lastRev.bestFrom : null);
+        final bestB =
+            hintB ?? ((showBest && lastRev != null) ? lastRev.bestTo : null);
         final squares = <Widget>[];
         for (int dr = 0; dr < 8; dr++) {
           for (int dc = 0; dc < 8; dc++) {
@@ -1349,7 +1405,8 @@ class _GamePageState extends State<GamePage> {
             final r = flipped ? 7 - dr : dr;
             final sq = _sq(r, f);
             final dark = (r + f) % 2 == 1;
-            final fg = dark ? kLight : kDark;
+            final th = kThemes[gTheme];
+            final fg = dark ? th[0] : th[1];
             final hl = sq == lastFrom || sq == lastTo || sq == selected;
             squares.add(Positioned(
               left: dc * cell,
@@ -1359,7 +1416,7 @@ class _GamePageState extends State<GamePage> {
               child: GestureDetector(
                 onTap: () => _tap(sq),
                 child: Container(
-                  color: dark ? kDark : kLight,
+                  color: dark ? kThemes[gTheme][1] : kThemes[gTheme][0],
                   child: Stack(children: [
                     if (hl) Container(color: const Color(0x80F6F669)),
                     if (sq == bestA || sq == bestB)
@@ -1489,6 +1546,9 @@ class _GamePageState extends State<GamePage> {
             if (!online) _nav(Icons.refresh, 'جديدة', _reset),
             _nav(Icons.swap_vert, 'قلب',
                 () => setState(() => flipped = !flipped)),
+            _nav(Icons.palette_outlined, 'ثيم',
+                () => setState(() => gTheme = (gTheme + 1) % kThemes.length)),
+            if (!online) _nav(Icons.lightbulb_outline, 'تلميح', _hint),
             if (!online) _nav(Icons.undo, 'تراجع', _undo),
             _nav(Icons.flag_outlined, 'استسلام', () {
               if (game.game_over || resultShown) return;
@@ -1512,7 +1572,7 @@ class _GamePageState extends State<GamePage> {
         onTap: f,
         borderRadius: BorderRadius.circular(8),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             Icon(i, size: 26, color: Colors.white70),
             const SizedBox(height: 2),
