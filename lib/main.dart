@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:chess/chess.dart' as ch;
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // ───────────── online server (change after you deploy it) ─────────────
 const kServerUrl = 'wss://YOUR-SERVER.onrender.com';
@@ -24,8 +25,63 @@ const List<List<Color>> kThemes = [
   [Color(0xFFEEEEEE), Color(0xFF9B7EBD)],
 ];
 
-void main() {
+class Prefs {
+  static SharedPreferences? prefs;
+  static bool sound = true;
+  static bool autoQueen = false;
+  static bool showLegal = true;
+  static bool showCoords = true;
+  static int increment = 0;
+  static int minutes = 10;
+
+  static Future<void> load() async {
+    final p = await SharedPreferences.getInstance();
+    prefs = p;
+    sound = p.getBool('sound') ?? true;
+    autoQueen = p.getBool('autoQueen') ?? false;
+    showLegal = p.getBool('showLegal') ?? true;
+    showCoords = p.getBool('showCoords') ?? true;
+    increment = p.getInt('increment') ?? 0;
+    minutes = p.getInt('minutes') ?? 10;
+    gTheme = p.getInt('theme') ?? 0;
+    if (gTheme < 0 || gTheme >= kThemes.length) gTheme = 0;
+  }
+
+  static void save() {
+    final p = prefs;
+    if (p == null) return;
+    p.setBool('sound', sound);
+    p.setBool('autoQueen', autoQueen);
+    p.setBool('showLegal', showLegal);
+    p.setBool('showCoords', showCoords);
+    p.setInt('increment', increment);
+    p.setInt('minutes', minutes);
+    p.setInt('theme', gTheme);
+  }
+
+  static int stat(String k) => prefs?.getInt(k) ?? 0;
+
+  static void bump(String prefix, int outcome) {
+    final p = prefs;
+    if (p == null) return;
+    final k = prefix + (outcome > 0 ? '_w' : (outcome < 0 ? '_l' : '_d'));
+    p.setInt(k, (p.getInt(k) ?? 0) + 1);
+  }
+
+  static void resetStats() {
+    final p = prefs;
+    if (p == null) return;
+    for (final k in ['ai_w', 'ai_l', 'ai_d', 'on_w', 'on_l', 'on_d']) {
+      p.remove(k);
+    }
+  }
+}
+
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  try {
+    await Prefs.load();
+  } catch (_) {}
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   runApp(const ChessApp());
 }
@@ -101,7 +157,7 @@ class MenuPage extends StatefulWidget {
 
 class _MenuPageState extends State<MenuPage> {
   bool playWhite = true;
-  int minutes = 10;
+  int minutes = Prefs.minutes;
 
   void _go(bool ai, int depth, String level) => Navigator.push(
       context,
@@ -111,7 +167,8 @@ class _MenuPageState extends State<MenuPage> {
               depth: depth,
               level: level,
               playerWhite: playWhite,
-              minutes: minutes)));
+              minutes: minutes,
+              inc: Prefs.increment)));
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -166,7 +223,27 @@ class _MenuPageState extends State<MenuPage> {
                             label: Text('$m د'),
                             selected: minutes == m,
                             selectedColor: kGreen,
-                            onSelected: (_) => setState(() => minutes = m),
+                            onSelected: (_) => setState(() {
+                              minutes = m;
+                              Prefs.minutes = m;
+                              Prefs.save();
+                            }),
+                          ),
+                      ]),
+                      const SizedBox(height: 10),
+                      const Text('زيادة الوقت بعد كل نقلة',
+                          style: TextStyle(fontSize: 15)),
+                      const SizedBox(height: 8),
+                      Wrap(spacing: 8, children: [
+                        for (final inc in [0, 2, 3, 5])
+                          ChoiceChip(
+                            label: Text('+$inc ث'),
+                            selected: Prefs.increment == inc,
+                            selectedColor: kGreen,
+                            onSelected: (_) => setState(() {
+                              Prefs.increment = inc;
+                              Prefs.save();
+                            }),
                           ),
                       ]),
                     ]),
@@ -177,9 +254,19 @@ class _MenuPageState extends State<MenuPage> {
                   alt: true),
               _big('متقدم', 'ضد الكمبيوتر - صعب', () => _go(true, 3, 'متقدم'),
                   alt: true),
+              _big('خبير', 'ضد الكمبيوتر - يفكر 3 ثوان لكل نقلة',
+                  () => _go(true, 99, 'خبير'),
+                  alt: true),
               _big('العب مع صديق', 'لاعبان على نفس الجهاز',
                   () => _go(false, 0, ''),
                   alt: true),
+              _big('الإحصائيات والإعدادات', 'سجلك وخيارات اللعبة', () {
+                Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const SettingsPage()))
+                    .then((_) => setState(() {}));
+              }, alt: true),
             ],
           ),
         ),
@@ -459,7 +546,15 @@ int _quiesce(ch.Chess g, int alpha, int beta, int qd) {
   return best;
 }
 
+final Stopwatch _sw = Stopwatch();
+int _limitMs = 0;
+bool _timeUp = false;
+
 int _search(ch.Chess g, int depth, int alpha, int beta) {
+  if (_limitMs > 0 && _sw.elapsedMilliseconds > _limitMs) {
+    _timeUp = true;
+    return 0;
+  }
   if (g.in_checkmate) {
     return g.turn == ch.Color.WHITE ? -99999 - depth : 99999 + depth;
   }
@@ -509,6 +604,43 @@ Map<String, String>? _bestMoveTask(Map<String, dynamic> a) {
   };
 }
 
+// Expert level: iterative deepening with a time limit.
+Map<String, String>? _bestMoveTimed(Map<String, dynamic> a) {
+  final g = ch.Chess.fromFEN(a['fen'] as String);
+  var ms = _sortedMoves(g);
+  if (ms.isEmpty) return null;
+  final white = g.turn == ch.Color.WHITE;
+  _limitMs = a['ms'] as int;
+  _timeUp = false;
+  _sw
+    ..reset()
+    ..start();
+  dynamic best = ms.first;
+  for (int d = 1; d <= 8; d++) {
+    dynamic bestD;
+    int bestV = white ? -1000000 : 1000000;
+    for (final m in ms) {
+      g.move(m);
+      final v = _search(g, d - 1, -1000000, 1000000);
+      g.undo_move();
+      if (_timeUp) break;
+      if (white ? v > bestV : v < bestV) {
+        bestV = v;
+        bestD = m;
+      }
+    }
+    if (_timeUp || bestD == null) break;
+    best = bestD;
+    final first = bestD;
+    ms = [first, ...ms.where((m) => m != first)];
+    if (bestV.abs() > 90000) break;
+  }
+  return {
+    'from': best.fromAlgebraic as String,
+    'to': best.toAlgebraic as String
+  };
+}
+
 // Move review: scores every legal move, compares the played one with the best.
 Map<String, dynamic>? _analyzeTask(Map<String, dynamic> a) {
   final g = ch.Chess.fromFEN(a['fen'] as String);
@@ -519,6 +651,13 @@ Map<String, dynamic>? _analyzeTask(Map<String, dynamic> a) {
   final white = g.turn == ch.Color.WHITE;
   final ms = _sortedMoves(g);
   if (ms.isEmpty) return null;
+  final movedPiece = g.get(pf);
+  final capturedPiece = g.get(pt);
+  final movedVal =
+      movedPiece == null ? 0 : _vals[movedPiece.type.toString()]!;
+  final capVal =
+      capturedPiece == null ? 0 : _vals[capturedPiece.type.toString()]!;
+  dynamic playedMove;
   dynamic best;
   int bestV = white ? -2000000 : 2000000;
   int playedV = 0;
@@ -535,6 +674,7 @@ Map<String, dynamic>? _analyzeTask(Map<String, dynamic> a) {
         m.toAlgebraic == pt &&
         (mp == null || mp == pp)) {
       playedV = v;
+      playedMove = m;
       found = true;
     }
     if (white ? v > bestV : v < bestV) {
@@ -543,6 +683,15 @@ Map<String, dynamic>? _analyzeTask(Map<String, dynamic> a) {
     }
   }
   if (!found) return null;
+  bool sac = false;
+  if (movedVal >= 300 && capVal < movedVal - 50) {
+    try {
+      g.move(playedMove);
+      sac = (g.moves({'asObjects': true}) as List)
+          .any((x) => x.toAlgebraic == pt);
+      g.undo_move();
+    } catch (_) {}
+  }
   moverScores.sort((x, y) => y - x);
   final moverBest = moverScores.first;
   final moverPlayed = white ? playedV : -playedV;
@@ -564,6 +713,7 @@ Map<String, dynamic>? _analyzeTask(Map<String, dynamic> a) {
     'bestFrom': bf,
     'bestTo': bt,
     'bestSan': bestSan,
+    'sac': sac,
   };
 }
 
@@ -596,6 +746,7 @@ class GI {
 }
 
 const Map<String, GI> kGrades = {
+  'brilliant': GI('!!', Color(0xFF1BACA6), 'نقلة عبقرية'),
   'great': GI('!', Color(0xFF5C8BB0), 'نقلة رائعة'),
   'best': GI('★', Color(0xFF96BC4B), 'أفضل نقلة'),
   'excellent': GI('✓', Color(0xFF96BC4B), 'نقلة ممتازة'),
@@ -605,13 +756,73 @@ const Map<String, GI> kGrades = {
   'blunder': GI('??', Color(0xFFCA3431), 'خطأ فادح'),
 };
 
-String _gradeOf(int loss, int gap, int n) {
-  if (loss <= 0) return (gap >= 200 && n > 1) ? 'great' : 'best';
+String _gradeOf(int loss, int gap, int n, {bool sac = false}) {
+  if (loss <= 0) {
+    if (sac && gap >= 150) return 'brilliant';
+    return (gap >= 200 && n > 1) ? 'great' : 'best';
+  }
   if (loss <= 25) return 'excellent';
   if (loss <= 70) return 'good';
   if (loss <= 150) return 'inaccuracy';
   if (loss <= 300) return 'mistake';
   return 'blunder';
+}
+
+const Map<String, String> kOpenings = {
+  'e4': "King's Pawn Opening",
+  'd4': "Queen's Pawn Opening",
+  'c4': 'English Opening',
+  'Nf3': 'Reti Opening',
+  'e4 e5': 'Open Game',
+  'e4 e5 Nf3 Nc6': 'Open Game: Main Line',
+  'e4 e5 Nf3 Nc6 Bb5': 'Ruy Lopez',
+  'e4 e5 Nf3 Nc6 Bb5 a6': 'Ruy Lopez: Morphy Defense',
+  'e4 e5 Nf3 Nc6 Bc4': 'Italian Game',
+  'e4 e5 Nf3 Nc6 Bc4 Bc5': 'Giuoco Piano',
+  'e4 e5 Nf3 Nc6 d4': 'Scotch Game',
+  'e4 e5 Nf3 Nf6': 'Petrov Defense',
+  'e4 e5 Nf3 d6': 'Philidor Defense',
+  'e4 e5 f4': "King's Gambit",
+  'e4 e5 Nc3': 'Vienna Game',
+  'e4 c5': 'Sicilian Defense',
+  'e4 c5 Nf3 d6': 'Sicilian Defense: Open',
+  'e4 c5 Nf3 e6': 'Sicilian Defense: Kan / Taimanov',
+  'e4 c5 Nf3 Nc6': 'Sicilian Defense: Old Sicilian',
+  'e4 e6': 'French Defense',
+  'e4 e6 d4 d5': 'French Defense: Main Line',
+  'e4 c6': 'Caro-Kann Defense',
+  'e4 d5': 'Scandinavian Defense',
+  'e4 d6': 'Pirc Defense',
+  'e4 g6': 'Modern Defense',
+  'e4 Nf6': "Alekhine's Defense",
+  'd4 d5': "Queen's Pawn Game",
+  'd4 d5 c4': "Queen's Gambit",
+  'd4 d5 c4 e6': "Queen's Gambit Declined",
+  'd4 d5 c4 dxc4': "Queen's Gambit Accepted",
+  'd4 d5 c4 c6': 'Slav Defense',
+  'd4 d5 Bf4': 'London System',
+  'd4 Nf6': 'Indian Defense',
+  'd4 Nf6 Bf4': 'London System',
+  'd4 Nf6 c4 g6': "King's Indian Defense",
+  'd4 Nf6 c4 e6 Nc3 Bb4': 'Nimzo-Indian Defense',
+  'd4 f5': 'Dutch Defense',
+  'c4 e5': 'English Opening: Reversed Sicilian',
+};
+
+String _opening(List<String> sans) {
+  final clean = sans.map((x) => x.replaceAll(RegExp(r'[+#]'), '')).toList();
+  String best = '';
+  int bestLen = 0;
+  kOpenings.forEach((key, name) {
+    final t = key.split(' ');
+    if (t.length > clean.length || t.length <= bestLen) return;
+    for (int i = 0; i < t.length; i++) {
+      if (t[i] != clean[i]) return;
+    }
+    best = name;
+    bestLen = t.length;
+  });
+  return best;
 }
 
 // ───────────── game page ─────────────
@@ -622,6 +833,7 @@ class GamePage extends StatefulWidget {
   final bool playerWhite;
   final Net? net;
   final int minutes;
+  final int inc;
   const GamePage(
       {super.key,
       required this.vsAI,
@@ -629,7 +841,8 @@ class GamePage extends StatefulWidget {
       required this.level,
       required this.playerWhite,
       this.net,
-      this.minutes = 10});
+      this.minutes = 10,
+      this.inc = 0});
   @override
   State<GamePage> createState() => _GamePageState();
 }
@@ -649,6 +862,10 @@ class _GamePageState extends State<GamePage> {
   int epoch = 0;
   late int whiteSecs, blackSecs;
   String? hintA, hintB;
+  late List<String> fens;
+  List<List<String>> moveSq = [];
+  int? viewIdx;
+  String resultTag = '*';
   final ScrollController _sc = ScrollController();
 
   bool get online => widget.net != null;
@@ -660,6 +877,7 @@ class _GamePageState extends State<GamePage> {
     super.initState();
     flipped = !widget.playerWhite;
     whiteSecs = blackSecs = widget.minutes * 60;
+    fens = [game.fen];
     _rebuild();
     _tick();
     widget.net?.setHandler(_onNet);
@@ -682,10 +900,10 @@ class _GamePageState extends State<GamePage> {
             fromNet: true);
         break;
       case 'resign':
-        _end('استسلم الخصم - فزت!');
+        _end('استسلم الخصم - فزت!', outcome: 1);
         break;
       case 'left':
-        _end('غادر الخصم - فزت!');
+        _end('غادر الخصم - فزت!', outcome: 1);
         break;
       case 'closed':
         if (!game.game_over && !resultShown) _end('انقطع الاتصال بالسيرفر');
@@ -722,16 +940,35 @@ class _GamePageState extends State<GamePage> {
         }
       });
       if (whiteSecs <= 0 || blackSecs <= 0) {
-        _end(whiteSecs <= 0
-            ? 'انتهى الوقت - فاز الأسود'
-            : 'انتهى الوقت - فاز الأبيض');
+        _end(
+            whiteSecs <= 0
+                ? 'انتهى الوقت - فاز الأسود'
+                : 'انتهى الوقت - فاز الأبيض',
+            outcome: _oc(whiteSecs > 0));
       }
     }
   }
 
-  void _end(String m) {
+  int _oc(bool whiteWins) => (whiteWins == widget.playerWhite) ? 1 : -1;
+
+  void _end(String m, {int? outcome}) {
     if (resultShown || !mounted) return;
     resultShown = true;
+    if (m.contains('فاز الأبيض')) {
+      resultTag = '1-0';
+    } else if (m.contains('فاز الأسود')) {
+      resultTag = '0-1';
+    } else if (m.contains('تعادل')) {
+      resultTag = '1/2-1/2';
+    } else if (m.contains('فزت')) {
+      resultTag = widget.playerWhite ? '1-0' : '0-1';
+    } else if (m.contains('فاز الخصم')) {
+      resultTag = widget.playerWhite ? '0-1' : '1-0';
+    }
+    if (outcome != null && (widget.vsAI || online)) {
+      Prefs.bump(online ? 'on' : 'ai', outcome);
+    }
+    if (Prefs.sound) HapticFeedback.vibrate();
     Future.delayed(const Duration(milliseconds: 500), () {
       if (!mounted) return;
       showDialog(
@@ -800,6 +1037,10 @@ class _GamePageState extends State<GamePage> {
       showBest = false;
       hintA = hintB = null;
       reviews = [];
+      fens = [game.fen];
+      moveSq = [];
+      viewIdx = null;
+      resultTag = '*';
       _rebuild();
     });
     _maybeAI();
@@ -807,15 +1048,17 @@ class _GamePageState extends State<GamePage> {
 
   void _checkEnd() {
     if (game.in_checkmate) {
-      _end(game.turn == ch.Color.WHITE
-          ? 'كش مات - فاز الأسود'
-          : 'كش مات - فاز الأبيض');
+      _end(
+          game.turn == ch.Color.WHITE
+              ? 'كش مات - فاز الأسود'
+              : 'كش مات - فاز الأبيض',
+          outcome: _oc(game.turn != ch.Color.WHITE));
     } else if (game.in_stalemate) {
-      _end('تعادل بالجمود (ستالميت)');
+      _end('تعادل بالجمود (ستالميت)', outcome: 0);
     } else if (game.in_threefold_repetition) {
-      _end('تعادل بالتكرار');
+      _end('تعادل بالتكرار', outcome: 0);
     } else if (game.in_draw) {
-      _end('تعادل');
+      _end('تعادل', outcome: 0);
     }
   }
 
@@ -823,13 +1066,21 @@ class _GamePageState extends State<GamePage> {
   bool get _notMyTurnOnline =>
       online && (game.turn == ch.Color.WHITE) != widget.playerWhite;
 
-  void _click() {
+  void _sfx({bool capture = false, bool check = false}) {
+    if (!Prefs.sound) return;
     SystemSound.play(SystemSoundType.click);
-    HapticFeedback.selectionClick();
+    if (check) {
+      HapticFeedback.heavyImpact();
+    } else if (capture) {
+      HapticFeedback.mediumImpact();
+    } else {
+      HapticFeedback.selectionClick();
+    }
   }
 
   void _tap(String sq) {
-    if (thinking ||
+    if (viewIdx != null ||
+        thinking ||
         game.game_over ||
         resultShown ||
         _aiToMove ||
@@ -864,7 +1115,9 @@ class _GamePageState extends State<GamePage> {
     if (p != null &&
         p.type.toString() == 'p' &&
         (to[1] == '8' || to[1] == '1')) {
-      promo = await _askPromo(p.color == ch.Color.WHITE);
+      promo = Prefs.autoQueen
+          ? 'q'
+          : await _askPromo(p.color == ch.Color.WHITE);
       if (promo == null) return;
     }
     _doMove(from, to, promo);
@@ -922,8 +1175,17 @@ class _GamePageState extends State<GamePage> {
   void _doMove(String from, String to, String? promo, {bool fromNet = false}) {
     final fenBefore = game.fen;
     final moverWhite = game.turn == ch.Color.WHITE;
+    final capture = game.get(to) != null;
     final ok = game.move({'from': from, 'to': to, 'promotion': promo ?? 'q'});
     if (!ok) return;
+    if (moverWhite) {
+      whiteSecs += widget.inc;
+    } else {
+      blackSecs += widget.inc;
+    }
+    fens.add(game.fen);
+    moveSq.add([from, to]);
+    viewIdx = null;
     if (online && !fromNet) {
       widget.net!.send({'t': 'move', 'from': from, 'to': to, 'promo': promo});
     }
@@ -934,7 +1196,7 @@ class _GamePageState extends State<GamePage> {
     } catch (_) {}
     final rev = Rev(san, moverWhite, to);
     reviews.add(rev);
-    _click();
+    _sfx(capture: capture, check: game.in_check);
     setState(() {
       _applyMove(from, to, promo);
       lastFrom = from;
@@ -962,8 +1224,178 @@ class _GamePageState extends State<GamePage> {
       rev.bestSan = r['bestSan'] as String;
       rev.bestFrom = r['bestFrom'] as String;
       rev.bestTo = r['bestTo'] as String;
-      rev.grade = _gradeOf(rev.loss, r['gap'] as int, r['n'] as int);
+      rev.grade = _gradeOf(rev.loss, r['gap'] as int, r['n'] as int,
+          sac: r['sac'] as bool);
     });
+  }
+
+  void _popHist() {
+    if (reviews.isNotEmpty) reviews.removeLast();
+    if (fens.length > 1) fens.removeLast();
+    if (moveSq.isNotEmpty) moveSq.removeLast();
+  }
+
+  List<Pc> _pcsFromFen(String fen) {
+    final g = ch.Chess.fromFEN(fen);
+    final l = <Pc>[];
+    int id = 100000;
+    for (int r = 0; r < 8; r++) {
+      for (int f = 0; f < 8; f++) {
+        final p = g.get(_sq(r, f));
+        if (p != null) {
+          l.add(Pc(id++, p.type.toString(), p.color == ch.Color.WHITE,
+              _sq(r, f)));
+        }
+      }
+    }
+    return l;
+  }
+
+  void _goView(int i) {
+    setState(() {
+      viewIdx = (i >= fens.length - 1) ? null : i;
+      selected = null;
+      targets = [];
+      hintA = hintB = null;
+    });
+  }
+
+  String _pgn() {
+    final sans = _sans();
+    final d = DateTime.now();
+    String two(int x) => x.toString().padLeft(2, '0');
+    String white = 'White';
+    String black = 'Black';
+    if (widget.vsAI) {
+      if (aiWhite) {
+        white = 'Computer';
+      } else {
+        black = 'Computer';
+      }
+    }
+    final b = StringBuffer();
+    b.writeln('[Event "Casual Game"]');
+    b.writeln('[Site "Chess App"]');
+    b.writeln('[Date "${d.year}.${two(d.month)}.${two(d.day)}"]');
+    b.writeln('[White "$white"]');
+    b.writeln('[Black "$black"]');
+    b.writeln('[Result "$resultTag"]');
+    b.writeln();
+    for (int i = 0; i < sans.length; i++) {
+      if (i % 2 == 0) b.write('${i ~/ 2 + 1}. ');
+      b.write('${sans[i]} ');
+    }
+    b.write(resultTag);
+    return b.toString();
+  }
+
+  Future<void> _copy(String t, String msg) async {
+    await Clipboard.setData(ClipboardData(text: t));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg), duration: const Duration(seconds: 1)));
+  }
+
+  Future<void> _offerDraw() async {
+    if (game.game_over || resultShown || online) return;
+    if (widget.vsAI) {
+      final ev = reviews
+          .lastWhere((r) => r.grade != null, orElse: () => Rev('', true, ''))
+          .evalAfter;
+      final aiScore = aiWhite ? ev : -ev;
+      if (aiScore <= 80 && game.history.length >= 20) {
+        _end('تعادل بالاتفاق', outcome: 0);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('رفض الكمبيوتر التعادل'),
+            duration: Duration(seconds: 1)));
+      }
+      return;
+    }
+    final ok = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+              backgroundColor: kPanel,
+              title: const Text('عرض تعادل'),
+              content: const Text('هل يقبل الطرف الآخر التعادل؟'),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    child: const Text('لا')),
+                TextButton(
+                    onPressed: () => Navigator.pop(context, true),
+                    child: const Text('نعم')),
+              ],
+            ));
+    if (ok == true) _end('تعادل بالاتفاق', outcome: 0);
+  }
+
+  void _moreSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: kPanel,
+      isScrollControlled: true,
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setS) => SafeArea(
+          child: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              ListTile(
+                  leading: const Icon(Icons.copy),
+                  title: const Text('نسخ PGN'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _copy(_pgn(), 'تم نسخ PGN');
+                  }),
+              ListTile(
+                  leading: const Icon(Icons.grid_on),
+                  title: const Text('نسخ FEN'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _copy(game.fen, 'تم نسخ FEN');
+                  }),
+              if (!online)
+                ListTile(
+                    leading: const Icon(Icons.balance),
+                    title: const Text('عرض تعادل'),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _offerDraw();
+                    }),
+              SwitchListTile(
+                  title: const Text('الصوت والاهتزاز'),
+                  value: Prefs.sound,
+                  onChanged: (v) {
+                    setS(() => Prefs.sound = v);
+                    Prefs.save();
+                  }),
+              SwitchListTile(
+                  title: const Text('ترقية تلقائية إلى وزير'),
+                  value: Prefs.autoQueen,
+                  onChanged: (v) {
+                    setS(() => Prefs.autoQueen = v);
+                    Prefs.save();
+                  }),
+              SwitchListTile(
+                  title: const Text('إظهار النقلات الممكنة'),
+                  value: Prefs.showLegal,
+                  onChanged: (v) {
+                    setS(() => Prefs.showLegal = v);
+                    setState(() {});
+                    Prefs.save();
+                  }),
+              SwitchListTile(
+                  title: const Text('إظهار الإحداثيات'),
+                  value: Prefs.showCoords,
+                  onChanged: (v) {
+                    setS(() => Prefs.showCoords = v);
+                    setState(() {});
+                    Prefs.save();
+                  }),
+            ]),
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _hint() async {
@@ -986,8 +1418,13 @@ class _GamePageState extends State<GamePage> {
     final my = epoch;
     setState(() => thinking = true);
     await Future.delayed(const Duration(milliseconds: 450));
-    final r = await compute(
-        _bestMoveTask, {'fen': game.fen, 'depth': widget.depth});
+    Map<String, String>? r;
+    if (widget.depth >= 99) {
+      r = await compute(_bestMoveTimed, {'fen': game.fen, 'ms': 3000});
+    } else {
+      r = await compute(
+          _bestMoveTask, {'fen': game.fen, 'depth': widget.depth});
+    }
     if (!mounted || my != epoch) return;
     setState(() => thinking = false);
     if (r != null) _doMove(r['from']!, r['to']!, 'q');
@@ -999,11 +1436,12 @@ class _GamePageState extends State<GamePage> {
     if (game.history.isEmpty) return;
     epoch++;
     game.undo_move();
-    if (reviews.isNotEmpty) reviews.removeLast();
+    _popHist();
     if (widget.vsAI && game.turn == aiColor && game.history.isNotEmpty) {
       game.undo_move();
-      if (reviews.isNotEmpty) reviews.removeLast();
+      _popHist();
     }
+    viewIdx = null;
     setState(() {
       selected = null;
       targets = [];
@@ -1065,7 +1503,8 @@ class _GamePageState extends State<GamePage> {
             const SizedBox(height: 6),
             _playerBar(bottomWhite),
             Expanded(
-              child: SingleChildScrollView(child: _reviewCard()),
+              child: SingleChildScrollView(
+                  child: Column(children: [_historyBar(), _reviewCard()])),
             ),
             _navBar(),
           ],
@@ -1121,6 +1560,34 @@ class _GamePageState extends State<GamePage> {
           ),
         ]),
       ),
+    );
+  }
+
+  Widget _historyBar() {
+    final total = fens.length - 1;
+    final cur = viewIdx ?? total;
+    final op = _opening(_sans());
+    Widget btn(IconData i, VoidCallback? f) => IconButton(
+        onPressed: f,
+        icon: Icon(i, size: 22),
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 40, minHeight: 36));
+    return Container(
+      margin: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+      padding: const EdgeInsets.only(left: 12, right: 4),
+      decoration: BoxDecoration(
+          color: kPanel, borderRadius: BorderRadius.circular(8)),
+      child: Row(children: [
+        Expanded(
+          child: Text(op.isEmpty ? 'الافتتاحية: --' : 'الافتتاحية: $op',
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13, color: Colors.white70)),
+        ),
+        btn(Icons.first_page, cur > 0 ? () => _goView(0) : null),
+        btn(Icons.chevron_left, cur > 0 ? () => _goView(cur - 1) : null),
+        btn(Icons.chevron_right, cur < total ? () => _goView(cur + 1) : null),
+        btn(Icons.last_page, cur < total ? () => _goView(total) : null),
+      ]),
     );
   }
 
@@ -1379,6 +1846,8 @@ class _GamePageState extends State<GamePage> {
   Widget _board() => LayoutBuilder(builder: (ctx, cons) {
         final S = cons.maxWidth;
         final cell = S / 8;
+        final inView = viewIdx != null;
+        final shownPcs = inView ? _pcsFromFen(fens[viewIdx!]) : pcs;
         Offset pos(String sq) {
           final f = _files.indexOf(sq[0]);
           final r = 8 - int.parse(sq[1]);
@@ -1388,7 +1857,7 @@ class _GamePageState extends State<GamePage> {
 
         final whiteTurn = game.turn == ch.Color.WHITE;
         String? kingSq;
-        if (game.in_check) {
+        if (!inView && game.in_check) {
           for (final p in pcs) {
             if (p.type == 'k' && p.white == whiteTurn) kingSq = p.sq;
           }
@@ -1407,7 +1876,11 @@ class _GamePageState extends State<GamePage> {
             final dark = (r + f) % 2 == 1;
             final th = kThemes[gTheme];
             final fg = dark ? th[0] : th[1];
-            final hl = sq == lastFrom || sq == lastTo || sq == selected;
+            final hl = inView
+                ? (viewIdx! > 0 &&
+                    (sq == moveSq[viewIdx! - 1][0] ||
+                        sq == moveSq[viewIdx! - 1][1]))
+                : (sq == lastFrom || sq == lastTo || sq == selected);
             squares.add(Positioned(
               left: dc * cell,
               top: dr * cell,
@@ -1435,7 +1908,7 @@ class _GamePageState extends State<GamePage> {
                           ]),
                         ),
                       ),
-                    if (dc == 0)
+                    if (Prefs.showCoords && dc == 0)
                       Positioned(
                           left: 2,
                           top: 1,
@@ -1444,7 +1917,7 @@ class _GamePageState extends State<GamePage> {
                                   fontSize: cell * 0.2,
                                   fontWeight: FontWeight.w800,
                                   color: fg))),
-                    if (dr == 7)
+                    if (Prefs.showCoords && dr == 7)
                       Positioned(
                           right: 2,
                           bottom: 0,
@@ -1461,7 +1934,7 @@ class _GamePageState extends State<GamePage> {
         }
         // grade badge on the destination square of the last move
         Widget? badge;
-        if (lastRev != null && lastRev.grade != null) {
+        if (!inView && lastRev != null && lastRev.grade != null) {
           final g = kGrades[lastRev.grade!]!;
           final p = pos(lastRev.to);
           final bsz = cell * 0.42;
@@ -1480,7 +1953,7 @@ class _GamePageState extends State<GamePage> {
               ...squares,
               Positioned.fill(
                 child: Stack(children: [
-                  for (final pc in pcs)
+                  for (final pc in shownPcs)
                     AnimatedPositioned(
                       key: ValueKey(pc.id),
                       duration: const Duration(milliseconds: 170),
@@ -1502,7 +1975,7 @@ class _GamePageState extends State<GamePage> {
               Positioned.fill(
                 child: IgnorePointer(
                   child: Stack(children: [
-                    for (final t in targets)
+                    for (final t in (Prefs.showLegal ? targets : <String>[]))
                       Positioned(
                         left: pos(t).dx,
                         top: pos(t).dy,
@@ -1547,14 +2020,17 @@ class _GamePageState extends State<GamePage> {
             _nav(Icons.swap_vert, 'قلب',
                 () => setState(() => flipped = !flipped)),
             _nav(Icons.palette_outlined, 'ثيم',
-                () => setState(() => gTheme = (gTheme + 1) % kThemes.length)),
+                () => setState(() {
+                      gTheme = (gTheme + 1) % kThemes.length;
+                      Prefs.save();
+                    })),
             if (!online) _nav(Icons.lightbulb_outline, 'تلميح', _hint),
             if (!online) _nav(Icons.undo, 'تراجع', _undo),
             _nav(Icons.flag_outlined, 'استسلام', () {
               if (game.game_over || resultShown) return;
               if (online) {
                 widget.net!.send({'t': 'resign'});
-                _end('استسلمت - فاز الخصم');
+                _end('استسلمت - فاز الخصم', outcome: -1);
                 return;
               }
               final whiteResigns = widget.vsAI
@@ -1562,8 +2038,10 @@ class _GamePageState extends State<GamePage> {
                   : game.turn == ch.Color.WHITE;
               _end(whiteResigns
                   ? 'استسلم الأبيض - فاز الأسود'
-                  : 'استسلم الأسود - فاز الأبيض');
+                  : 'استسلم الأسود - فاز الأبيض',
+                  outcome: widget.vsAI ? -1 : null);
             }),
+            _nav(Icons.more_horiz, 'المزيد', _moreSheet),
           ],
         ),
       );
@@ -1762,4 +2240,107 @@ class PiecePainter extends CustomPainter {
   @override
   bool shouldRepaint(PiecePainter old) =>
       old.type != type || old.white != white;
+}
+
+// ───────────── settings & stats ─────────────
+class SettingsPage extends StatefulWidget {
+  const SettingsPage({super.key});
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  Widget _stat(String title, String p) {
+    final w = Prefs.stat('${p}_w');
+    final l = Prefs.stat('${p}_l');
+    final d = Prefs.stat('${p}_d');
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+          color: kPanel, borderRadius: BorderRadius.circular(10)),
+      child: Row(children: [
+        Text(title,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+        const Spacer(),
+        Text('فوز $w  •  خسارة $l  •  تعادل $d',
+            style: const TextStyle(fontSize: 13, color: Colors.white70)),
+      ]),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(
+            backgroundColor: kPanel, title: const Text('الإحصائيات والإعدادات')),
+        body: ListView(padding: const EdgeInsets.all(16), children: [
+          _stat('ضد الكمبيوتر', 'ai'),
+          _stat('أونلاين', 'on'),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+                onPressed: () => setState(Prefs.resetStats),
+                child: const Text('تصفير الإحصائيات')),
+          ),
+          const SizedBox(height: 8),
+          const Text('ألوان الرقعة', style: TextStyle(fontSize: 16)),
+          const SizedBox(height: 10),
+          Row(children: [
+            for (int i = 0; i < kThemes.length; i++)
+              GestureDetector(
+                onTap: () => setState(() {
+                  gTheme = i;
+                  Prefs.save();
+                }),
+                child: Container(
+                  width: 54,
+                  height: 54,
+                  margin: const EdgeInsets.only(right: 12),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                        color: gTheme == i ? kGreen : Colors.transparent,
+                        width: 3),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(5),
+                    child: Row(children: [
+                      Expanded(child: Container(color: kThemes[i][0])),
+                      Expanded(child: Container(color: kThemes[i][1])),
+                    ]),
+                  ),
+                ),
+              ),
+          ]),
+          const SizedBox(height: 12),
+          SwitchListTile(
+              title: const Text('الصوت والاهتزاز'),
+              value: Prefs.sound,
+              onChanged: (v) => setState(() {
+                    Prefs.sound = v;
+                    Prefs.save();
+                  })),
+          SwitchListTile(
+              title: const Text('ترقية تلقائية إلى وزير'),
+              value: Prefs.autoQueen,
+              onChanged: (v) => setState(() {
+                    Prefs.autoQueen = v;
+                    Prefs.save();
+                  })),
+          SwitchListTile(
+              title: const Text('إظهار النقلات الممكنة'),
+              value: Prefs.showLegal,
+              onChanged: (v) => setState(() {
+                    Prefs.showLegal = v;
+                    Prefs.save();
+                  })),
+          SwitchListTile(
+              title: const Text('إظهار الإحداثيات'),
+              value: Prefs.showCoords,
+              onChanged: (v) => setState(() {
+                    Prefs.showCoords = v;
+                    Prefs.save();
+                  })),
+        ]),
+      );
 }
