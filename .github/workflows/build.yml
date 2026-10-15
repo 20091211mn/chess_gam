@@ -1,4 +1,4 @@
-name: Build APK
+name: Build apps
 on:
   push:
     branches: [main]
@@ -6,7 +6,7 @@ on:
       - 'server/**'
   workflow_dispatch:
 jobs:
-  build:
+  android:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,3 +33,25 @@ jobs:
         with:
           name: chess-apk
           path: build/app/outputs/flutter-apk/app-release.apk
+
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter create --platforms=ios --project-name chess_game --org com.example .
+      - name: iOS app name
+        run: /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Chess" ios/Runner/Info.plist || true
+      - run: flutter pub get
+      - run: flutter build ios --release --no-codesign --build-number=${{ github.run_number }}
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p Payload
+          cp -r build/ios/iphoneos/Runner.app Payload/Runner.app
+          zip -qr chess.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chess-ipa
+          path: chess.ipa

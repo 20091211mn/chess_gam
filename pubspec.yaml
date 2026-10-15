@@ -12,6 +12,7 @@ dependencies:
   chess: ^0.8.1
   web_socket_channel: ^2.4.0
   shared_preferences: ^2.2.2
+  in_app_purchase: ^3.2.0
 
 flutter:
   uses-material-design: true

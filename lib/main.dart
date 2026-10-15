@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
@@ -6,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:chess/chess.dart' as ch;
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
 
 // ───────────── online server (change after you deploy it) ─────────────
 const kServerUrl = 'wss://YOUR-SERVER.onrender.com';
@@ -23,6 +25,10 @@ const List<List<Color>> kThemes = [
   [Color(0xFFF0D9B5), Color(0xFFB58863)],
   [Color(0xFFDEE3E6), Color(0xFF8CA2AD)],
   [Color(0xFFEEEEEE), Color(0xFF9B7EBD)],
+  [Color(0xFFFFFFDD), Color(0xFF86A666)],
+  [Color(0xFFE5D4B7), Color(0xFFA67C52)],
+  [Color(0xFFD6EAF8), Color(0xFF5B8DB8)],
+  [Color(0xFFFFE0E0), Color(0xFFC06C84)],
 ];
 
 class TC {
@@ -55,13 +61,68 @@ String catOf(int min, int inc) {
   return t < 180 ? 'bullet' : (t < 600 ? 'blitz' : 'rapid');
 }
 
+const List<String> kTierName = ['مجاني', 'فضي', 'ذهبي', 'ماسي'];
+const List<String> kTierBadge = ['', '🥈', '🥇', '💎'];
+const List<Color> kTierColor = [
+  Color(0xFF9E9E9E),
+  Color(0xFFC0C0C0),
+  Color(0xFFFFC107),
+  Color(0xFF4FC3F7),
+];
+const List<int> kFriendLimit = [10, 30, 100, 300];
+const List<int> kHistoryLimit = [10, 50, 100, 300];
+const List<String> kPlanIds = [
+  '',
+  'silver_monthly',
+  'gold_monthly',
+  'diamond_monthly'
+];
+const List<List<String>> kPlanFeatures = [
+  [],
+  [
+    'تلميحات غير محدودة',
+    'ملخص مراجعة غير محدود',
+    'كل ألوان الرقعة (8)',
+    'يفتح اللاعب "خالد" (1600)',
+    'حتى 30 صديقاً',
+    'سجل آخر 50 مباراة',
+    'شارة 🥈 بجانب اسمك',
+  ],
+  [
+    'كل مزايا الفضي',
+    'يفتح اللاعب "الخبير" (1900)',
+    'حتى 100 صديق',
+    'سجل آخر 100 مباراة',
+    'شارة 🥇 بجانب اسمك',
+  ],
+  [
+    'كل مزايا الذهبي',
+    'يفتح اللاعب "تيتان" (2200)',
+    'حتى 300 صديق',
+    'سجل آخر 300 مباراة',
+    'شارة 💎 بجانب اسمك',
+  ],
+];
+const List<String> kChat = [
+  'مرحباً 👋',
+  'حظاً موفقاً',
+  'نقلة جيدة!',
+  'شكراً',
+  'أحسنت 👏',
+  'دقيقة من فضلك',
+  'هل نتعادل؟',
+  'مباراة ممتعة',
+];
+
 class Bot {
   final String name;
   final int rating;
   final int depth;
   final int blunder;
   final Color color;
-  const Bot(this.name, this.rating, this.depth, this.blunder, this.color);
+  final int tier;
+  const Bot(this.name, this.rating, this.depth, this.blunder, this.color,
+      [this.tier = 0]);
 }
 
 const List<Bot> kBots = [
@@ -69,8 +130,9 @@ const List<Bot> kBots = [
   Bot('سالم', 700, 1, 20, Color(0xFF6FA8DC)),
   Bot('عمر', 1000, 2, 15, Color(0xFF93C47D)),
   Bot('ليلى', 1300, 2, 5, Color(0xFFF6B26B)),
-  Bot('خالد', 1600, 3, 2, Color(0xFFE06666)),
-  Bot('الخبير', 1900, 99, 0, Color(0xFFB45F06)),
+  Bot('خالد', 1600, 3, 2, Color(0xFFE06666), 1),
+  Bot('الخبير', 1900, 99, 0, Color(0xFFB45F06), 2),
+  Bot('تيتان', 2200, 98, 0, Color(0xFF674EA7), 3),
 ];
 
 class Prefs {
@@ -85,6 +147,19 @@ class Prefs {
   static String name = 'لاعب';
   static String pid = '';
   static String serverUrl = kServerUrl;
+  static bool usedOnline = false;
+  static int storeTier = 0;
+  static int serverTier = 0;
+  static int serverUntil = 0;
+
+  static int get tier {
+    int t = storeTier;
+    if (serverUntil > DateTime.now().millisecondsSinceEpoch &&
+        serverTier > t) {
+      t = serverTier;
+    }
+    return t.clamp(0, 3).toInt();
+  }
 
   static Future<void> load() async {
     final p = await SharedPreferences.getInstance();
@@ -99,11 +174,17 @@ class Prefs {
     final rnd = Random();
     name = p.getString('name') ?? 'لاعب${100 + rnd.nextInt(900)}';
     pid = p.getString('pid') ??
-        List.generate(16, (_) => 'abcdefghijklmnopqrstuvwxyz0123456789'[rnd.nextInt(36)])
+        List.generate(
+                16, (_) => 'abcdefghijklmnopqrstuvwxyz0123456789'[rnd.nextInt(36)])
             .join();
     serverUrl = p.getString('server') ?? kServerUrl;
+    usedOnline = p.getBool('uo') ?? false;
+    storeTier = p.getInt('stier') ?? 0;
+    serverTier = p.getInt('svtier') ?? 0;
+    serverUntil = p.getInt('svuntil') ?? 0;
     gTheme = p.getInt('theme') ?? 0;
     if (gTheme < 0 || gTheme >= kThemes.length) gTheme = 0;
+    if (gTheme >= 3 && tier < 1) gTheme = 0;
     save();
   }
 
@@ -118,6 +199,10 @@ class Prefs {
     p.setString('name', name);
     p.setString('pid', pid);
     p.setString('server', serverUrl);
+    p.setBool('uo', usedOnline);
+    p.setInt('stier', storeTier);
+    p.setInt('svtier', serverTier);
+    p.setInt('svuntil', serverUntil);
     p.setInt('theme', gTheme);
   }
 
@@ -154,6 +239,44 @@ class Prefs {
       p.remove(k);
     }
   }
+
+  // free users have daily limits (hints, reviews)
+  static bool useDaily(String key, int limit) {
+    final p = prefs;
+    if (p == null) return true;
+    final now = DateTime.now();
+    final day = '${now.year}-${now.month}-${now.day}';
+    if (p.getString('dd_$key') != day) {
+      p.setString('dd_$key', day);
+      p.setInt('dn_$key', 0);
+    }
+    final n = p.getInt('dn_$key') ?? 0;
+    if (n >= limit) return false;
+    p.setInt('dn_$key', n + 1);
+    return true;
+  }
+
+  static List<Map<String, dynamic>> history() {
+    final raw = prefs?.getString('hist');
+    if (raw == null) return [];
+    try {
+      return (jsonDecode(raw) as List)
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  static void addHistory(Map<String, dynamic> g) {
+    final l = history();
+    l.insert(0, g);
+    final cap = kHistoryLimit[tier];
+    while (l.length > cap) {
+      l.removeLast();
+    }
+    prefs?.setString('hist', jsonEncode(l));
+  }
 }
 
 Future<void> main() async {
@@ -161,6 +284,8 @@ Future<void> main() async {
   try {
     await Prefs.load();
   } catch (_) {}
+  Store.init();
+  if (Prefs.usedOnline) Hub.ensure();
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   runApp(const ChessApp());
 }
@@ -173,6 +298,7 @@ class ChessApp extends StatelessWidget {
         debugShowCheckedModeBanner: false,
         theme: ThemeData.dark(useMaterial3: true)
             .copyWith(scaffoldBackgroundColor: kBg),
+        navigatorKey: navKey,
         home: const MenuPage(),
       );
 }
@@ -181,56 +307,18 @@ class ChessApp extends StatelessWidget {
 class Net {
   late final WebSocketChannel chan;
   void Function(Map m)? onMsg;
-  final List<Map> _buf = [];
-  String color = 'w';
-  String oppName = 'الخصم';
-  int oppRating = 0;
-  int myRating = 0;
-  int min = 10;
-  int inc = 0;
-  String cat = 'blitz';
   bool closed = false;
 
   Net(String url) {
     chan = WebSocketChannel.connect(Uri.parse(url));
     chan.stream.listen((d) {
       try {
-        _deliver(jsonDecode(d as String) as Map);
+        final m = jsonDecode(d as String);
+        if (m is Map) onMsg?.call(m);
       } catch (_) {}
     },
-        onDone: () => _deliver({'t': 'closed'}),
-        onError: (_) => _deliver({'t': 'closed'}));
-  }
-
-  void applyStart(Map m) {
-    color = m['color'] == 'b' ? 'b' : 'w';
-    final o = m['opp'];
-    if (o is Map) {
-      oppName = (o['name'] ?? 'الخصم').toString();
-      oppRating = (o['rating'] as num?)?.toInt() ?? 0;
-    }
-    final y = m['you'];
-    if (y is Map) myRating = (y['rating'] as num?)?.toInt() ?? 0;
-    min = (m['min'] as num?)?.toInt() ?? 10;
-    inc = (m['inc'] as num?)?.toInt() ?? 0;
-    cat = (m['cat'] ?? 'blitz').toString();
-  }
-
-  void _deliver(Map m) {
-    if (onMsg != null) {
-      onMsg!(m);
-    } else {
-      _buf.add(m);
-    }
-  }
-
-  void setHandler(void Function(Map m) h) {
-    onMsg = h;
-    final copy = List<Map>.from(_buf);
-    _buf.clear();
-    for (final m in copy) {
-      h(m);
-    }
+        onDone: () => onMsg?.call({'t': 'closed'}),
+        onError: (_) => onMsg?.call({'t': 'closed'}));
   }
 
   void send(Map m) {
@@ -246,6 +334,387 @@ class Net {
     try {
       chan.sink.close();
     } catch (_) {}
+  }
+}
+
+class OnlineGame {
+  String color = 'w';
+  String oppName = 'الخصم';
+  int oppRating = 0;
+  int oppTier = 0;
+  int myRating = 0;
+  int min = 10;
+  int inc = 0;
+  String cat = 'blitz';
+
+  void apply(Map m) {
+    color = m['color'] == 'b' ? 'b' : 'w';
+    final o = m['opp'];
+    if (o is Map) {
+      oppName = (o['name'] ?? 'الخصم').toString();
+      oppRating = (o['rating'] as num?)?.toInt() ?? 0;
+      oppTier = (o['tier'] as num?)?.toInt() ?? 0;
+    }
+    final y = m['you'];
+    if (y is Map) myRating = (y['rating'] as num?)?.toInt() ?? 0;
+    min = (m['min'] as num?)?.toInt() ?? min;
+    inc = (m['inc'] as num?)?.toInt() ?? inc;
+    cat = (m['cat'] ?? cat).toString();
+  }
+}
+
+// ───────────── subscriptions (store) ─────────────
+class Store {
+  static final InAppPurchase _iap = InAppPurchase.instance;
+  static bool available = false;
+  static Map<String, ProductDetails> products = {};
+  static final ValueNotifier<int> tick = ValueNotifier(0);
+  static const Map<String, int> ids = {
+    'silver_monthly': 1,
+    'gold_monthly': 2,
+    'diamond_monthly': 3,
+  };
+  static StreamSubscription<List<PurchaseDetails>>? _sub;
+  static bool _gotActive = false;
+  static String lastError = '';
+
+  static Future<void> init() async {
+    try {
+      available = await _iap.isAvailable();
+      if (!available) {
+        tick.value++;
+        return;
+      }
+      _sub ??= _iap.purchaseStream.listen(_onPurchases,
+          onError: (Object e) {
+        lastError = '$e';
+      });
+      final r = await _iap.queryProductDetails(ids.keys.toSet());
+      for (final d in r.productDetails) {
+        products[d.id] = d;
+      }
+      await _iap.restorePurchases();
+      Future.delayed(const Duration(seconds: 6), () {
+        if (!_gotActive && Prefs.storeTier != 0) {
+          Prefs.storeTier = 0;
+          Prefs.save();
+          Hub.refreshHello();
+          tick.value++;
+        }
+      });
+    } catch (e) {
+      lastError = '$e';
+    }
+    tick.value++;
+  }
+
+  static Future<void> _onPurchases(List<PurchaseDetails> list) async {
+    int best = 0;
+    for (final p in list) {
+      if (p.status == PurchaseStatus.purchased ||
+          p.status == PurchaseStatus.restored) {
+        final t = ids[p.productID] ?? 0;
+        if (t > best) best = t;
+      }
+      if (p.status == PurchaseStatus.error) {
+        Hub.toast('تعذر إتمام عملية الشراء');
+      }
+      if (p.pendingCompletePurchase) {
+        await _iap.completePurchase(p);
+      }
+    }
+    if (best > 0) {
+      _gotActive = true;
+      if (best != Prefs.storeTier) {
+        Prefs.storeTier = best;
+        Prefs.save();
+        Hub.refreshHello();
+        Hub.toast('تم تفعيل اشتراكك: ${kTierName[best]}');
+      }
+    }
+    tick.value++;
+  }
+
+  static Future<void> buy(String id) async {
+    final pd = products[id];
+    if (!available || pd == null) {
+      Hub.toast('الاشتراك غير متاح الآن. يتطلب التثبيت من المتجر أو استخدم كود هدية.');
+      return;
+    }
+    try {
+      await _iap.buyNonConsumable(
+          purchaseParam: PurchaseParam(productDetails: pd));
+    } catch (e) {
+      Hub.toast('تعذر بدء عملية الشراء');
+    }
+  }
+
+  static Future<void> restore() async {
+    if (!available) {
+      Hub.toast('المتجر غير متاح');
+      return;
+    }
+    try {
+      await _iap.restorePurchases();
+      Hub.toast('جاري استعادة المشتريات...');
+    } catch (_) {}
+  }
+}
+
+// ───────────── hub: one persistent connection ─────────────
+final GlobalKey<NavigatorState> navKey = GlobalKey<NavigatorState>();
+
+class Hub {
+  static Net? net;
+  static bool want = false;
+  static bool inGame = false;
+  static bool _up = false;
+  static String status = '';
+  static List friends = [];
+  static List reqIn = [];
+  static List reqOut = [];
+  static String myCode = '';
+  static OnlineGame? game;
+  static void Function(Map m)? gameHandler;
+  static void Function(Map m)? pageHandler;
+  static final List<Map> pending = [];
+  static final ValueNotifier<int> tick = ValueNotifier(0);
+  static Timer? _rt;
+
+  static bool get connected => net != null && !net!.closed && _up;
+
+  static Map _helloMsg() => {
+        't': 'hello',
+        'id': Prefs.pid,
+        'name': Prefs.name,
+        'stier': Prefs.storeTier,
+        'ig': inGame,
+      };
+
+  static void ensure() {
+    want = true;
+    final url = Prefs.serverUrl.trim();
+    if (url.isEmpty || url.contains('YOUR-SERVER')) return;
+    if (net != null && !net!.closed) return;
+    try {
+      final n = Net(url);
+      net = n;
+      n.onMsg = (m) {
+        if (!identical(net, n)) return;
+        _onMsg(m);
+      };
+      n.send(_helloMsg());
+      n.send({'t': 'friends'});
+    } catch (_) {
+      net = null;
+    }
+  }
+
+  static void refreshHello() {
+    net?.send(_helloMsg());
+  }
+
+  static void send(Map m) {
+    ensure();
+    net?.send(m);
+  }
+
+  static void reset() {
+    _rt?.cancel();
+    final old = net;
+    net = null;
+    _up = false;
+    old?.close();
+    ensure();
+    tick.value++;
+  }
+
+  static void toast(String t) {
+    final ctx = navKey.currentContext;
+    if (ctx == null) return;
+    ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(
+        SnackBar(content: Text(t), duration: const Duration(seconds: 3)));
+  }
+
+  static void setGameHandler(void Function(Map m) h) {
+    gameHandler = h;
+    final copy = List<Map>.from(pending);
+    pending.clear();
+    for (final m in copy) {
+      h(m);
+    }
+  }
+
+  static void clearGame() {
+    gameHandler = null;
+    inGame = false;
+    game = null;
+    pending.clear();
+  }
+
+  static void _pushGame(OnlineGame g) {
+    inGame = true;
+    navKey.currentState?.push(MaterialPageRoute(
+        builder: (_) => GamePage(
+            vsAI: false,
+            depth: 0,
+            level: '',
+            playerWhite: g.color == 'w',
+            minutes: g.min,
+            inc: g.inc,
+            og: g)));
+  }
+
+  static void _showChallenge(Map m) {
+    final ctx = navKey.currentContext;
+    if (ctx == null) return;
+    final from = (m['from'] is Map)
+        ? ((m['from'] as Map)['name'] ?? 'صديق').toString()
+        : 'صديق';
+    final mn = (m['min'] as num?)?.toInt() ?? 10;
+    final inc = (m['inc'] as num?)?.toInt() ?? 0;
+    final cid = m['cid'];
+    showDialog(
+        context: ctx,
+        barrierDismissible: false,
+        builder: (dctx) => AlertDialog(
+              backgroundColor: kPanel,
+              title: const Text('طلب مباراة'),
+              content: Text(
+                  '$from يتحداك لمباراة $mn | $inc (${kCatLabel[catOf(mn, inc)]})'),
+              actions: [
+                TextButton(
+                    onPressed: () {
+                      Navigator.pop(dctx);
+                      send({'t': 'challenge_decline', 'cid': cid});
+                    },
+                    child: const Text('رفض')),
+                TextButton(
+                    onPressed: () {
+                      Navigator.pop(dctx);
+                      send({'t': 'challenge_accept', 'cid': cid});
+                    },
+                    child: const Text('قبول')),
+              ],
+            ));
+  }
+
+  static void _onMsg(Map m) {
+    switch (m['t']) {
+      case 'hi':
+        _up = true;
+        final r = m['r'];
+        if (r is Map) {
+          for (final c in ['bullet', 'blitz', 'rapid']) {
+            final v = r[c];
+            if (v is num) Prefs.setORating(c, v.toInt());
+          }
+        }
+        Prefs.serverTier = (m['tier'] as num?)?.toInt() ?? 0;
+        Prefs.serverUntil = (m['until'] as num?)?.toInt() ?? 0;
+        if (m['code'] != null) myCode = m['code'].toString();
+        Prefs.save();
+        tick.value++;
+        break;
+      case 'friends':
+        friends = (m['list'] as List?) ?? [];
+        reqIn = (m['reqIn'] as List?) ?? [];
+        reqOut = (m['reqOut'] as List?) ?? [];
+        if (m['code'] != null) myCode = m['code'].toString();
+        tick.value++;
+        break;
+      case 'presence':
+        for (final f in friends) {
+          if (f is Map && f['id'] == m['id']) f['online'] = m['online'];
+        }
+        tick.value++;
+        break;
+      case 'friend_req':
+        toast('طلب صداقة جديد من ${m['name']}');
+        break;
+      case 'friend_ok':
+      case 'friend_err':
+      case 'challenge_err':
+      case 'plan_err':
+        toast((m['msg'] ?? '').toString());
+        break;
+      case 'challenge':
+        _showChallenge(m);
+        break;
+      case 'challenge_sent':
+        toast('تم إرسال طلب المباراة، بانتظار الرد...');
+        break;
+      case 'challenge_declined':
+        toast('${m['name']} رفض المباراة');
+        break;
+      case 'challenge_cancelled':
+        toast('أُلغي طلب المباراة');
+        break;
+      case 'plan':
+        Prefs.serverTier = (m['tier'] as num?)?.toInt() ?? 0;
+        Prefs.serverUntil = (m['until'] as num?)?.toInt() ?? 0;
+        Prefs.save();
+        toast('تم تفعيل الاشتراك: ${kTierName[Prefs.tier]}');
+        tick.value++;
+        break;
+      case 'waiting':
+        status = 'waiting';
+        tick.value++;
+        break;
+      case 'top':
+        pageHandler?.call(m);
+        break;
+      case 'start':
+        status = '';
+        tick.value++;
+        if (gameHandler != null) {
+          gameHandler!(m);
+        } else {
+          final g = OnlineGame()..apply(m);
+          game = g;
+          _pushGame(g);
+        }
+        break;
+      case 'resume':
+        if (gameHandler != null) {
+          gameHandler!(m);
+        } else {
+          pending.add(m);
+          if (!inGame) {
+            final g = OnlineGame()..apply(m);
+            game = g;
+            _pushGame(g);
+          }
+        }
+        break;
+      case 'move':
+      case 'clock':
+      case 'end':
+      case 'draw_offer':
+      case 'draw_declined':
+      case 'rematch_offer':
+      case 'chat':
+      case 'opp_disc':
+      case 'opp_back':
+      case 'no_game':
+        if (gameHandler != null) {
+          gameHandler!(m);
+        } else if (inGame) {
+          pending.add(m);
+        }
+        break;
+      case 'closed':
+        _up = false;
+        net = null;
+        status = '';
+        tick.value++;
+        gameHandler?.call(m);
+        if (want) {
+          _rt?.cancel();
+          _rt = Timer(const Duration(seconds: 3), ensure);
+        }
+        break;
+    }
   }
 }
 
@@ -337,6 +806,24 @@ class MenuPage extends StatefulWidget {
 }
 
 class _MenuPageState extends State<MenuPage> {
+  void _r() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    Store.tick.addListener(_r);
+    Hub.tick.addListener(_r);
+  }
+
+  @override
+  void dispose() {
+    Store.tick.removeListener(_r);
+    Hub.tick.removeListener(_r);
+    super.dispose();
+  }
+
   Future<void> _rename() async {
     final c = TextEditingController(text: Prefs.name);
     final v = await showDialog<String>(
@@ -359,6 +846,7 @@ class _MenuPageState extends State<MenuPage> {
         Prefs.name = v;
         Prefs.save();
       });
+      Hub.refreshHello();
     }
   }
 
@@ -394,10 +882,17 @@ class _MenuPageState extends State<MenuPage> {
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: Text(Prefs.name,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontSize: 20, fontWeight: FontWeight.w800)),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('${Prefs.name} ${kTierBadge[Prefs.tier]}',
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 20, fontWeight: FontWeight.w800)),
+                    Text('الخطة: ${kTierName[Prefs.tier]}',
+                        style: TextStyle(
+                            fontSize: 12, color: kTierColor[Prefs.tier])),
+                  ]),
             ),
             IconButton(onPressed: _rename, icon: const Icon(Icons.edit, size: 20)),
           ]),
@@ -412,6 +907,11 @@ class _MenuPageState extends State<MenuPage> {
           ]),
         ]),
       );
+
+  void _go(Widget page) {
+    Navigator.push(context, MaterialPageRoute(builder: (_) => page))
+        .then((_) => setState(() {}));
+  }
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -433,34 +933,35 @@ class _MenuPageState extends State<MenuPage> {
               const SizedBox(height: 18),
               _profile(),
               TcPicker(onChanged: () => setState(() {})),
-              bigButton('العب أونلاين', 'ضد لاعبين حقيقيين بتقييم', () {
-                Navigator.push(context,
-                        MaterialPageRoute(builder: (_) => const OnlinePage()))
-                    .then((_) => setState(() {}));
-              }),
-              bigButton('العب ضد الكمبيوتر', 'لاعبون بتقييمات من 400 إلى 1900',
-                  () {
-                Navigator.push(context,
-                        MaterialPageRoute(builder: (_) => const BotsPage()))
-                    .then((_) => setState(() {}));
-              }, alt: true),
+              bigButton('العب أونلاين', 'ضد لاعبين حقيقيين بتقييم',
+                  () => _go(const OnlinePage())),
+              bigButton('الأصدقاء', 'أضف أصدقاءك وتحدَّهم لمباراة',
+                  () => _go(const FriendsPage()),
+                  alt: true),
+              bigButton('العب ضد الكمبيوتر', 'لاعبون بتقييمات من 400 إلى 2200',
+                  () => _go(const BotsPage()),
+                  alt: true),
               bigButton('العب مع صديق', 'لاعبان على نفس الجهاز', () {
-                Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => GamePage(
-                            vsAI: false,
-                            depth: 0,
-                            level: '',
-                            playerWhite: true,
-                            minutes: Prefs.minutes,
-                            inc: Prefs.increment)));
+                _go(GamePage(
+                    vsAI: false,
+                    depth: 0,
+                    level: '',
+                    playerWhite: true,
+                    minutes: Prefs.minutes,
+                    inc: Prefs.increment));
               }, alt: true),
-              bigButton('الإحصائيات والإعدادات', 'سجلك وخيارات اللعبة', () {
-                Navigator.push(context,
-                        MaterialPageRoute(builder: (_) => const SettingsPage()))
-                    .then((_) => setState(() {}));
-              }, alt: true),
+              bigButton(
+                  'الاشتراكات',
+                  Prefs.tier == 0
+                      ? 'فضي • ذهبي • ماسي'
+                      : 'خطتك الحالية: ${kTierName[Prefs.tier]} ${kTierBadge[Prefs.tier]}',
+                  () => _go(const PlansPage())),
+              bigButton('سجل المباريات', 'مبارياتك السابقة وملفات PGN',
+                  () => _go(const HistoryPage()),
+                  alt: true),
+              bigButton('الإحصائيات والإعدادات', 'سجلك وخيارات اللعبة',
+                  () => _go(const SettingsPage()),
+                  alt: true),
             ],
           ),
         ),
@@ -494,59 +995,76 @@ class _BotsPageState extends State<BotsPage> {
         ),
       );
 
-  Widget _tile(Bot b) => GestureDetector(
-        onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(
-                builder: (_) => GamePage(
-                    vsAI: true,
-                    depth: b.depth,
-                    level: b.name,
-                    botRating: b.rating,
-                    blunder: b.blunder,
-                    playerWhite: playWhite,
-                    minutes: Prefs.minutes,
-                    inc: Prefs.increment))),
-        child: Container(
-          margin: const EdgeInsets.only(bottom: 10),
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-              color: kPanel, borderRadius: BorderRadius.circular(10)),
-          child: Row(children: [
-            Container(
-              width: 50,
-              height: 50,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                  color: b.color, borderRadius: BorderRadius.circular(8)),
-              child: Text(b.name.substring(0, 1),
-                  style: const TextStyle(
-                      fontSize: 24, fontWeight: FontWeight.w900)),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(b.name,
-                        style: const TextStyle(
-                            fontSize: 18, fontWeight: FontWeight.w800)),
-                    const Text('تقييم تقديري',
-                        style: TextStyle(fontSize: 12, color: Colors.white54)),
-                  ]),
-            ),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                  color: kBg, borderRadius: BorderRadius.circular(6)),
-              child: Text('${b.rating}',
-                  style: const TextStyle(
-                      fontSize: 16, fontWeight: FontWeight.w800)),
-            ),
-            const Icon(Icons.chevron_right),
-          ]),
-        ),
-      );
+  void _open(Bot b) {
+    if (Prefs.tier < b.tier) {
+      Hub.toast('هذا اللاعب يتطلب اشتراك ${kTierName[b.tier]}');
+      Navigator.push(
+          context, MaterialPageRoute(builder: (_) => const PlansPage()));
+      return;
+    }
+    Navigator.push(
+        context,
+        MaterialPageRoute(
+            builder: (_) => GamePage(
+                vsAI: true,
+                depth: b.depth,
+                level: b.name,
+                botRating: b.rating,
+                blunder: b.blunder,
+                playerWhite: playWhite,
+                minutes: Prefs.minutes,
+                inc: Prefs.increment)));
+  }
+
+  Widget _tile(Bot b) {
+    final locked = Prefs.tier < b.tier;
+    return GestureDetector(
+      onTap: () => _open(b),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+            color: kPanel, borderRadius: BorderRadius.circular(10)),
+        child: Row(children: [
+          Container(
+            width: 50,
+            height: 50,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+                color: b.color, borderRadius: BorderRadius.circular(8)),
+            child: Text(b.name.substring(0, 1),
+                style: const TextStyle(
+                    fontSize: 24, fontWeight: FontWeight.w900)),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(b.name,
+                      style: const TextStyle(
+                          fontSize: 18, fontWeight: FontWeight.w800)),
+                  Text(
+                      locked
+                          ? 'يتطلب اشتراك ${kTierName[b.tier]} ${kTierBadge[b.tier]}'
+                          : 'تقييم تقديري',
+                      style: const TextStyle(
+                          fontSize: 12, color: Colors.white54)),
+                ]),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+                color: kBg, borderRadius: BorderRadius.circular(6)),
+            child: Text('${b.rating}',
+                style: const TextStyle(
+                    fontSize: 16, fontWeight: FontWeight.w800)),
+          ),
+          Icon(locked ? Icons.lock : Icons.chevron_right),
+        ]),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -573,6 +1091,442 @@ class _BotsPageState extends State<BotsPage> {
   }
 }
 
+// ───────────── plans (subscriptions) ─────────────
+class PlansPage extends StatefulWidget {
+  const PlansPage({super.key});
+  @override
+  State<PlansPage> createState() => _PlansPageState();
+}
+
+class _PlansPageState extends State<PlansPage> {
+  final codeCtl = TextEditingController();
+
+  void _r() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    Prefs.usedOnline = true;
+    Prefs.save();
+    Store.tick.addListener(_r);
+    Hub.tick.addListener(_r);
+    Hub.ensure();
+  }
+
+  @override
+  void dispose() {
+    Store.tick.removeListener(_r);
+    Hub.tick.removeListener(_r);
+    codeCtl.dispose();
+    super.dispose();
+  }
+
+  Widget _card(int t) {
+    final id = kPlanIds[t];
+    final pd = Store.products[id];
+    final active = Prefs.tier >= t;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+          color: kPanel,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: kTierColor[t], width: 2)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Text(kTierBadge[t], style: const TextStyle(fontSize: 28)),
+          const SizedBox(width: 8),
+          Text(kTierName[t],
+              style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
+                  color: kTierColor[t])),
+          const Spacer(),
+          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Text(pd?.price ?? '--',
+                style:
+                    const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+            const Text('شهرياً',
+                style: TextStyle(fontSize: 11, color: Colors.white54)),
+          ]),
+        ]),
+        const SizedBox(height: 10),
+        for (final f in kPlanFeatures[t])
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Icon(Icons.check, size: 16, color: kGreen),
+              const SizedBox(width: 6),
+              Expanded(child: Text(f, style: const TextStyle(fontSize: 14))),
+            ]),
+          ),
+        const SizedBox(height: 10),
+        GestureDetector(
+          onTap: active ? null : () => Store.buy(id),
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+                color: active ? const Color(0xFF454240) : kGreen,
+                borderRadius: BorderRadius.circular(8)),
+            child: Text(active ? 'مفعّل' : 'اشترك',
+                style:
+                    const TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final until = Prefs.serverUntil;
+    String untilTxt = '';
+    if (until > DateTime.now().millisecondsSinceEpoch && Prefs.serverTier > 0) {
+      final d = DateTime.fromMillisecondsSinceEpoch(until);
+      untilTxt = ' (كود هدية حتى ${d.year}/${d.month}/${d.day})';
+    }
+    return Scaffold(
+      appBar: AppBar(backgroundColor: kPanel, title: const Text('الاشتراكات')),
+      body: ListView(padding: const EdgeInsets.all(16), children: [
+        Container(
+          padding: const EdgeInsets.all(14),
+          margin: const EdgeInsets.only(bottom: 14),
+          decoration: BoxDecoration(
+              color: kPanel, borderRadius: BorderRadius.circular(10)),
+          child: Text(
+              'خطتك الحالية: ${kTierName[Prefs.tier]} ${kTierBadge[Prefs.tier]}$untilTxt',
+              style:
+                  const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+        ),
+        const Text(
+            'المجاني: 5 تلميحات يومياً، ملخص مراجعة واحد يومياً، 3 ألوان رقعة، حتى 10 أصدقاء.',
+            style: TextStyle(fontSize: 12, color: Colors.white54)),
+        const SizedBox(height: 12),
+        _card(1),
+        _card(2),
+        _card(3),
+        if (!Store.available)
+          const Padding(
+            padding: EdgeInsets.only(bottom: 12),
+            child: Text(
+                'الشراء من المتجر غير متاح على هذه النسخة. الاشتراك يتطلب تثبيت التطبيق من Google Play أو App Store. يمكنك استخدام كود هدية بالأسفل.',
+                style: TextStyle(fontSize: 12, color: Colors.orangeAccent)),
+          ),
+        TextButton(
+            onPressed: Store.restore,
+            child: const Text('استعادة المشتريات')),
+        const SizedBox(height: 8),
+        const Text('لديك كود هدية؟', style: TextStyle(fontSize: 15)),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(
+            child: TextField(
+              controller: codeCtl,
+              textCapitalization: TextCapitalization.characters,
+              decoration: const InputDecoration(
+                  hintText: 'XXXX-XXXX-XXXX',
+                  border: OutlineInputBorder(),
+                  isDense: true),
+            ),
+          ),
+          const SizedBox(width: 10),
+          GestureDetector(
+            onTap: () {
+              final c = codeCtl.text.trim();
+              if (c.isEmpty) return;
+              Hub.send({'t': 'redeem', 'code': c});
+              codeCtl.clear();
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+              decoration: BoxDecoration(
+                  color: kGreen, borderRadius: BorderRadius.circular(8)),
+              child: const Text('تفعيل',
+                  style: TextStyle(fontWeight: FontWeight.w800)),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 20),
+      ]),
+    );
+  }
+}
+
+// ───────────── friends ─────────────
+class FriendsPage extends StatefulWidget {
+  const FriendsPage({super.key});
+  @override
+  State<FriendsPage> createState() => _FriendsPageState();
+}
+
+class _FriendsPageState extends State<FriendsPage> {
+  final codeCtl = TextEditingController();
+
+  void _r() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    Prefs.usedOnline = true;
+    Prefs.save();
+    Hub.tick.addListener(_r);
+    Hub.ensure();
+    Hub.send({'t': 'friends'});
+  }
+
+  @override
+  void dispose() {
+    Hub.tick.removeListener(_r);
+    codeCtl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _copy(String t, String msg) async {
+    await Clipboard.setData(ClipboardData(text: t));
+    Hub.toast(msg);
+  }
+
+  Future<void> _challenge(Map f) async {
+    final sel = await showModalBottomSheet<int>(
+        context: context,
+        backgroundColor: kPanel,
+        isScrollControlled: true,
+        builder: (ctx) => SafeArea(
+              child: SingleChildScrollView(
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Text('تحدَّ ${f['name']} - اختر الوقت',
+                        style: const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w800)),
+                  ),
+                  for (int i = 0; i < kTCs.length; i++)
+                    ListTile(
+                      title: Text(
+                          '${kTCs[i].label}   •   ${kCatLabel[catOf(kTCs[i].min, kTCs[i].inc)]}'),
+                      onTap: () => Navigator.pop(ctx, i),
+                    ),
+                ]),
+              ),
+            ));
+    if (sel == null) return;
+    Hub.send({
+      't': 'challenge',
+      'to': f['id'],
+      'min': kTCs[sel].min,
+      'inc': kTCs[sel].inc
+    });
+  }
+
+  Widget _friendTile(Map f) {
+    final on = f['online'] == true;
+    final busy = f['inGame'] == true;
+    final tier = ((f['tier'] as num?)?.toInt() ?? 0).clamp(0, 3).toInt();
+    final r = f['r'];
+    final blitz = (r is Map && r['blitz'] is num) ? (r['blitz'] as num).toInt() : 800;
+    final nm = (f['name'] ?? '?').toString();
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+          color: kPanel, borderRadius: BorderRadius.circular(8)),
+      child: Row(children: [
+        Stack(children: [
+          Container(
+            width: 42,
+            height: 42,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+                color: kBg, borderRadius: BorderRadius.circular(6)),
+            child: Text(nm.isEmpty ? '?' : nm.substring(0, 1),
+                style:
+                    const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+          ),
+          Positioned(
+            right: 0,
+            bottom: 0,
+            child: Container(
+              width: 12,
+              height: 12,
+              decoration: BoxDecoration(
+                  color: on ? kGreen : Colors.grey,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: kPanel, width: 2)),
+            ),
+          ),
+        ]),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('$nm ${kTierBadge[tier]}',
+                overflow: TextOverflow.ellipsis,
+                style:
+                    const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+            Text(
+                'Blitz $blitz  •  ${busy ? 'في مباراة' : (on ? 'متصل' : 'غير متصل')}',
+                style: const TextStyle(fontSize: 12, color: Colors.white54)),
+          ]),
+        ),
+        IconButton(
+          icon: const Icon(Icons.bolt),
+          color: kGreen,
+          onPressed: (on && !busy) ? () => _challenge(f) : null,
+        ),
+        IconButton(
+          icon: const Icon(Icons.person_remove_outlined, size: 20),
+          onPressed: () async {
+            final ok = await showDialog<bool>(
+                context: context,
+                builder: (_) => AlertDialog(
+                      backgroundColor: kPanel,
+                      title: Text('حذف $nm من الأصدقاء؟'),
+                      actions: [
+                        TextButton(
+                            onPressed: () => Navigator.pop(context, false),
+                            child: const Text('لا')),
+                        TextButton(
+                            onPressed: () => Navigator.pop(context, true),
+                            child: const Text('نعم')),
+                      ],
+                    ));
+            if (ok == true) Hub.send({'t': 'friend_remove', 'id': f['id']});
+          },
+        ),
+      ]),
+    );
+  }
+
+  Widget _reqTile(Map f) => Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+            color: kPanel, borderRadius: BorderRadius.circular(8)),
+        child: Row(children: [
+          Expanded(
+              child: Text('${f['name']} يريد إضافتك',
+                  style: const TextStyle(fontSize: 15))),
+          IconButton(
+              icon: const Icon(Icons.check_circle, color: kGreen),
+              onPressed: () => Hub.send({'t': 'friend_accept', 'id': f['id']})),
+          IconButton(
+              icon: const Icon(Icons.cancel, color: Colors.redAccent),
+              onPressed: () => Hub.send({'t': 'friend_decline', 'id': f['id']})),
+        ]),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final code = Hub.myCode;
+    final limit = kFriendLimit[Prefs.tier];
+    return Scaffold(
+      appBar: AppBar(backgroundColor: kPanel, title: const Text('الأصدقاء')),
+      body: ListView(padding: const EdgeInsets.all(16), children: [
+        if (!Hub.connected)
+          Container(
+            padding: const EdgeInsets.all(10),
+            margin: const EdgeInsets.only(bottom: 12),
+            decoration: BoxDecoration(
+                color: const Color(0xFF5A3A12),
+                borderRadius: BorderRadius.circular(8)),
+            child: const Text(
+                'غير متصل بالسيرفر. تأكد من رابط السيرفر في شاشة "العب أونلاين".',
+                style: TextStyle(fontSize: 13)),
+          ),
+        Container(
+          padding: const EdgeInsets.all(14),
+          margin: const EdgeInsets.only(bottom: 14),
+          decoration: BoxDecoration(
+              color: kPanel, borderRadius: BorderRadius.circular(10)),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('كود الصداقة الخاص بك',
+                style: TextStyle(fontSize: 12, color: Colors.white54)),
+            const SizedBox(height: 6),
+            Row(children: [
+              Expanded(
+                child: Text(code.isEmpty ? '...' : code,
+                    style: const TextStyle(
+                        fontSize: 26,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 4)),
+              ),
+              IconButton(
+                  icon: const Icon(Icons.copy),
+                  onPressed: code.isEmpty
+                      ? null
+                      : () => _copy(code, 'تم نسخ الكود')),
+            ]),
+            TextButton(
+                onPressed: code.isEmpty
+                    ? null
+                    : () => _copy(
+                        'العب الشطرنج معي! أضفني بكود الصداقة: $code',
+                        'تم نسخ رسالة الدعوة'),
+                child: const Text('نسخ رسالة دعوة لإرسالها لصديقك')),
+          ]),
+        ),
+        Row(children: [
+          Expanded(
+            child: TextField(
+              controller: codeCtl,
+              textCapitalization: TextCapitalization.characters,
+              decoration: const InputDecoration(
+                  labelText: 'كود صديقك',
+                  border: OutlineInputBorder(),
+                  isDense: true),
+            ),
+          ),
+          const SizedBox(width: 10),
+          GestureDetector(
+            onTap: () {
+              final c = codeCtl.text.trim();
+              if (c.isEmpty) return;
+              Hub.send({'t': 'friend_add', 'code': c});
+              codeCtl.clear();
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+              decoration: BoxDecoration(
+                  color: kGreen, borderRadius: BorderRadius.circular(8)),
+              child:
+                  const Text('إضافة', style: TextStyle(fontWeight: FontWeight.w800)),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 18),
+        if (Hub.reqIn.isNotEmpty) ...[
+          const Text('طلبات الصداقة',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 8),
+          for (final f in Hub.reqIn) if (f is Map) _reqTile(f),
+          const SizedBox(height: 10),
+        ],
+        Text('الأصدقاء (${Hub.friends.length}/$limit)',
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800)),
+        const SizedBox(height: 8),
+        if (Hub.friends.isEmpty)
+          const Padding(
+            padding: EdgeInsets.all(14),
+            child: Text('لا يوجد أصدقاء بعد. شارك كودك أو أضف كود صديقك.',
+                style: TextStyle(color: Colors.white54)),
+          ),
+        for (final f in Hub.friends) if (f is Map) _friendTile(f),
+        if (Hub.reqOut.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Text(
+              'طلبات مرسلة: ${Hub.reqOut.map((e) => (e is Map ? e['name'] : '').toString()).join('، ')}',
+              style: const TextStyle(fontSize: 12, color: Colors.white54)),
+        ],
+      ]),
+    );
+  }
+}
+
 // ───────────── online lobby ─────────────
 class OnlinePage extends StatefulWidget {
   const OnlinePage({super.key});
@@ -583,91 +1537,45 @@ class OnlinePage extends StatefulWidget {
 class _OnlinePageState extends State<OnlinePage> {
   final urlCtl = TextEditingController(text: Prefs.serverUrl);
   final roomCtl = TextEditingController();
-  Net? net;
-  String status = '';
-  bool busy = false;
-  bool handedOver = false;
+
+  void _r() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    Prefs.usedOnline = true;
+    Prefs.save();
+    Hub.tick.addListener(_r);
+    Hub.ensure();
+  }
 
   @override
   void dispose() {
-    if (!handedOver) net?.close();
+    Hub.tick.removeListener(_r);
     urlCtl.dispose();
     roomCtl.dispose();
     super.dispose();
   }
 
-  void _connect(Map join) {
-    final url = urlCtl.text.trim();
-    if (url.isEmpty) return;
-    Prefs.serverUrl = url;
+  void _saveUrl() {
+    Prefs.serverUrl = urlCtl.text.trim();
     Prefs.save();
-    net?.close();
-    setState(() {
-      busy = true;
-      status = 'جاري الاتصال بالسيرفر... (قد يستغرق دقيقة أول مرة)';
-    });
-    try {
-      net = Net(url);
-    } catch (_) {
-      setState(() {
-        busy = false;
-        status = 'رابط السيرفر غير صالح';
-      });
-      return;
-    }
-    final n = net!;
-    n.onMsg = (m) {
-      if (!mounted) return;
-      switch (m['t']) {
-        case 'hi':
-          final r = m['r'];
-          if (r is Map) {
-            for (final c in ['bullet', 'blitz', 'rapid']) {
-              final v = r[c];
-              if (v is num) Prefs.setORating(c, v.toInt());
-            }
-          }
-          setState(() {});
-          break;
-        case 'waiting':
-          setState(() => status = 'في انتظار خصم...');
-          break;
-        case 'start':
-          n.applyStart(m);
-          n.onMsg = null;
-          handedOver = true;
-          Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                  builder: (_) => GamePage(
-                      vsAI: false,
-                      depth: 0,
-                      level: '',
-                      playerWhite: n.color == 'w',
-                      minutes: n.min,
-                      inc: n.inc,
-                      net: n)));
-          break;
-        case 'closed':
-          setState(() {
-            busy = false;
-            status = 'تعذر الاتصال بالسيرفر';
-          });
-          break;
-      }
-    };
-    n.send({'t': 'hello', 'id': Prefs.pid, 'name': Prefs.name});
-    n.send(join);
+    Hub.reset();
+    Hub.toast('تم حفظ رابط السيرفر');
+  }
+
+  void _search(Map msg) {
+    Hub.status = 'searching';
+    Hub.tick.value++;
+    Hub.send(msg);
   }
 
   void _cancel() {
-    net?.send({'t': 'cancel'});
-    net?.close();
-    net = null;
-    setState(() {
-      busy = false;
-      status = '';
-    });
+    Hub.send({'t': 'cancel'});
+    Hub.status = '';
+    Hub.tick.value++;
   }
 
   Widget _ratingChip(String c) => Expanded(
@@ -689,10 +1597,26 @@ class _OnlinePageState extends State<OnlinePage> {
   @override
   Widget build(BuildContext context) {
     final tc = kTCs[Prefs.tcIdx];
+    final searching = Hub.status == 'waiting' || Hub.status == 'searching';
     return Scaffold(
       appBar:
           AppBar(backgroundColor: kPanel, title: const Text('لعب أونلاين')),
       body: ListView(padding: const EdgeInsets.all(20), children: [
+        Row(children: [
+          Container(
+            width: 10,
+            height: 10,
+            decoration: BoxDecoration(
+                color: Hub.connected ? kGreen : Colors.redAccent,
+                shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 8),
+          Text(Hub.connected ? 'متصل بالسيرفر' : 'غير متصل',
+              style: const TextStyle(fontSize: 14)),
+          const Spacer(),
+          TextButton(onPressed: Hub.reset, child: const Text('إعادة الاتصال')),
+        ]),
+        const SizedBox(height: 6),
         const Text('تقييمك أونلاين',
             style: TextStyle(fontSize: 12, color: Colors.white54)),
         const SizedBox(height: 6),
@@ -702,22 +1626,27 @@ class _OnlinePageState extends State<OnlinePage> {
           _ratingChip('rapid'),
         ]),
         const SizedBox(height: 14),
-        if (!busy) TcPicker(onChanged: () => setState(() {})),
-        TextField(
-          controller: urlCtl,
-          enabled: !busy,
-          decoration: const InputDecoration(
-              labelText: 'رابط السيرفر',
-              border: OutlineInputBorder(),
-              isDense: true),
-        ),
-        const SizedBox(height: 16),
+        if (!searching) TcPicker(onChanged: () => setState(() {})),
+        if (searching)
+          Container(
+            padding: const EdgeInsets.all(18),
+            margin: const EdgeInsets.only(bottom: 14),
+            decoration: BoxDecoration(
+                color: kPanel, borderRadius: BorderRadius.circular(10)),
+            child: Column(children: [
+              const CircularProgressIndicator(),
+              const SizedBox(height: 12),
+              Text('جاري البحث عن خصم (${tc.label})...',
+                  style: const TextStyle(fontSize: 16)),
+              TextButton(onPressed: _cancel, child: const Text('إلغاء')),
+            ]),
+          ),
         _btn('مباراة سريعة (${tc.label})',
-            busy ? null : () => _connect({'t': 'quick', 'min': tc.min, 'inc': tc.inc})),
-        const SizedBox(height: 16),
+            searching ? null : () => _search({'t': 'quick', 'min': tc.min, 'inc': tc.inc})),
+        const SizedBox(height: 14),
         TextField(
           controller: roomCtl,
-          enabled: !busy,
+          enabled: !searching,
           textCapitalization: TextCapitalization.characters,
           decoration: const InputDecoration(
               labelText: 'رمز الغرفة (اتفق عليه مع صديقك)',
@@ -727,47 +1656,45 @@ class _OnlinePageState extends State<OnlinePage> {
         const SizedBox(height: 10),
         _btn(
             'دخول الغرفة',
-            busy
+            searching
                 ? null
                 : () {
                     final r = roomCtl.text.trim();
                     if (r.isEmpty) {
-                      setState(() => status = 'اكتب رمز الغرفة');
+                      Hub.toast('اكتب رمز الغرفة');
                       return;
                     }
-                    _connect(
+                    _search(
                         {'t': 'join', 'room': r, 'min': tc.min, 'inc': tc.inc});
                   },
             alt: true),
         const SizedBox(height: 10),
         _btn(
-            'لوحة الصدارة',
-            busy
-                ? null
-                : () {
-                    Prefs.serverUrl = urlCtl.text.trim();
-                    Prefs.save();
-                    Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) =>
-                                LeaderboardPage(url: urlCtl.text.trim())));
-                  },
+            'الأصدقاء',
+            () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const FriendsPage())),
             alt: true),
-        const SizedBox(height: 20),
-        if (status.isNotEmpty)
-          Center(
-              child: Text(status,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 16))),
-        if (busy) ...[
-          const SizedBox(height: 14),
-          const Center(child: CircularProgressIndicator()),
-          const SizedBox(height: 14),
-          Center(
-              child:
-                  TextButton(onPressed: _cancel, child: const Text('إلغاء'))),
-        ],
+        const SizedBox(height: 10),
+        _btn(
+            'لوحة الصدارة',
+            () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const LeaderboardPage())),
+            alt: true),
+        const SizedBox(height: 14),
+        ExpansionTile(
+          title: const Text('إعدادات السيرفر'),
+          children: [
+            TextField(
+              controller: urlCtl,
+              decoration: const InputDecoration(
+                  labelText: 'رابط السيرفر (wss://...)',
+                  border: OutlineInputBorder(),
+                  isDense: true),
+            ),
+            const SizedBox(height: 8),
+            _btn('حفظ وإعادة الاتصال', _saveUrl, alt: true),
+          ],
+        ),
       ]),
     );
   }
@@ -796,14 +1723,12 @@ class _OnlinePageState extends State<OnlinePage> {
 
 // ───────────── leaderboard ─────────────
 class LeaderboardPage extends StatefulWidget {
-  final String url;
-  const LeaderboardPage({super.key, required this.url});
+  const LeaderboardPage({super.key});
   @override
   State<LeaderboardPage> createState() => _LeaderboardPageState();
 }
 
 class _LeaderboardPageState extends State<LeaderboardPage> {
-  Net? net;
   String cat = 'blitz';
   List list = [];
   String status = 'جاري التحميل...';
@@ -811,34 +1736,20 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
   @override
   void initState() {
     super.initState();
-    _open();
+    Hub.pageHandler = (m) {
+      if (!mounted) return;
+      setState(() {
+        list = (m['list'] as List?) ?? [];
+        status = list.isEmpty ? 'لا يوجد لاعبون بعد' : '';
+      });
+    };
+    Hub.send({'t': 'top', 'cat': cat});
   }
 
   @override
   void dispose() {
-    net?.close();
+    Hub.pageHandler = null;
     super.dispose();
-  }
-
-  void _open() {
-    try {
-      net = Net(widget.url);
-    } catch (_) {
-      status = 'رابط السيرفر غير صالح';
-      return;
-    }
-    net!.onMsg = (m) {
-      if (!mounted) return;
-      if (m['t'] == 'top') {
-        setState(() {
-          list = (m['list'] as List?) ?? [];
-          status = list.isEmpty ? 'لا يوجد لاعبون بعد' : '';
-        });
-      } else if (m['t'] == 'closed') {
-        setState(() => status = 'تعذر الاتصال بالسيرفر');
-      }
-    };
-    net!.send({'t': 'top', 'cat': cat});
   }
 
   void _setCat(String c) {
@@ -846,7 +1757,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
       cat = c;
       status = 'جاري التحميل...';
     });
-    net?.send({'t': 'top', 'cat': c});
+    Hub.send({'t': 'top', 'cat': c});
   }
 
   @override
@@ -895,6 +1806,89 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
             ),
         ]),
       );
+}
+
+// ───────────── history ─────────────
+class HistoryPage extends StatelessWidget {
+  const HistoryPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final list = Prefs.history();
+    return Scaffold(
+      appBar: AppBar(
+          backgroundColor: kPanel, title: const Text('سجل المباريات')),
+      body: list.isEmpty
+          ? const Center(
+              child: Text('لا توجد مباريات بعد',
+                  style: TextStyle(color: Colors.white54)))
+          : ListView.builder(
+              padding: const EdgeInsets.all(12),
+              itemCount: list.length,
+              itemBuilder: (ctx, i) {
+                final g = list[i];
+                final res = (g['r'] ?? '*').toString();
+                final me = (g['me'] ?? '').toString();
+                String label = 'تعادل';
+                Color col = Colors.amber;
+                if (res == '1-0' || res == '0-1') {
+                  final whiteWon = res == '1-0';
+                  if (me.isEmpty) {
+                    label = whiteWon ? 'فاز الأبيض' : 'فاز الأسود';
+                    col = Colors.white70;
+                  } else {
+                    final won = whiteWon == (me == 'w');
+                    label = won ? 'فوز' : 'خسارة';
+                    col = won ? kGreen : Colors.redAccent;
+                  }
+                }
+                final d = DateTime.fromMillisecondsSinceEpoch(
+                    (g['d'] as num?)?.toInt() ?? 0);
+                String two(int x) => x.toString().padLeft(2, '0');
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                      color: kPanel, borderRadius: BorderRadius.circular(8)),
+                  child: Row(children: [
+                    Container(
+                        width: 6,
+                        height: 40,
+                        decoration: BoxDecoration(
+                            color: col,
+                            borderRadius: BorderRadius.circular(3))),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('${g['o'] ?? ''}',
+                                style: const TextStyle(
+                                    fontSize: 16, fontWeight: FontWeight.w700)),
+                            Text(
+                                '$label  •  ${d.year}/${d.month}/${d.day} ${two(d.hour)}:${two(d.minute)}',
+                                style: const TextStyle(
+                                    fontSize: 12, color: Colors.white54)),
+                          ]),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.copy, size: 20),
+                      onPressed: () async {
+                        await Clipboard.setData(
+                            ClipboardData(text: (g['pgn'] ?? '').toString()));
+                        if (ctx.mounted) {
+                          ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(
+                              content: Text('تم نسخ PGN'),
+                              duration: Duration(seconds: 1)));
+                        }
+                      },
+                    ),
+                  ]),
+                );
+              },
+            ),
+    );
+  }
 }
 
 // ───────────── engine (runs in isolates) ─────────────
@@ -1303,7 +2297,7 @@ class GamePage extends StatefulWidget {
   final int depth;
   final String level;
   final bool playerWhite;
-  final Net? net;
+  final OnlineGame? og;
   final int minutes;
   final int inc;
   final int botRating;
@@ -1314,7 +2308,7 @@ class GamePage extends StatefulWidget {
       required this.depth,
       required this.level,
       required this.playerWhite,
-      this.net,
+      this.og,
       this.minutes = 10,
       this.inc = 0,
       this.botRating = 0,
@@ -1347,7 +2341,9 @@ class _GamePageState extends State<GamePage> {
   String resultTag = '*';
   final ScrollController _sc = ScrollController();
 
-  bool get online => widget.net != null;
+  bool get online => widget.og != null;
+  bool reconnecting = false;
+  bool oppAway = false;
   bool get aiWhite => !playerWhite;
   ch.Color get aiColor => aiWhite ? ch.Color.WHITE : ch.Color.BLACK;
 
@@ -1361,15 +2357,20 @@ class _GamePageState extends State<GamePage> {
     _rebuild();
     _tick();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      widget.net?.setHandler(_onNet);
+      if (widget.og != null) {
+        Hub.want = true;
+        Hub.setGameHandler(_onNet);
+      }
     });
     WidgetsBinding.instance.addPostFrameCallback((_) => _maybeAI());
   }
 
   @override
   void dispose() {
-    widget.net?.onMsg = null;
-    widget.net?.close();
+    if (widget.og != null) {
+      if (!resultShown && !game.game_over) Hub.send({'t': 'resign'});
+      Hub.clearGame();
+    }
     _sc.dispose();
     super.dispose();
   }
@@ -1384,6 +2385,7 @@ class _GamePageState extends State<GamePage> {
         break;
       case 'clock':
         _syncClocks(m);
+        if (reconnecting) setState(() => reconnecting = false);
         break;
       case 'draw_offer':
         _drawOfferDialog();
@@ -1394,20 +2396,140 @@ class _GamePageState extends State<GamePage> {
       case 'rematch_offer':
         _toast('الخصم يعرض إعادة المباراة');
         break;
+      case 'chat':
+        final ci = (m['i'] as num?)?.toInt() ?? -1;
+        if (ci >= 0 && ci < kChat.length) {
+          _toast('${widget.og!.oppName}: ${kChat[ci]}');
+        }
+        break;
+      case 'opp_disc':
+        setState(() => oppAway = true);
+        break;
+      case 'opp_back':
+        setState(() => oppAway = false);
+        break;
+      case 'resume':
+        _applyResume(m);
+        break;
+      case 'no_game':
+        setState(() => reconnecting = false);
+        if (!resultShown) _end('انتهت المباراة أثناء انقطاع الاتصال');
+        break;
       case 'start':
-        final n = widget.net!;
-        n.applyStart(m);
+        final n = widget.og!;
+        n.apply(m);
         if (_dialogOpen) Navigator.pop(context);
-        setState(() => playerWhite = n.color == 'w');
+        setState(() {
+          playerWhite = n.color == 'w';
+          reconnecting = false;
+          oppAway = false;
+        });
         _reset(force: true);
         break;
       case 'end':
         _onlineEnd(m);
         break;
       case 'closed':
-        if (!resultShown) _end('انقطع الاتصال بالسيرفر');
+        if (!resultShown) setState(() => reconnecting = true);
         break;
     }
+  }
+
+  void _applyResume(Map m) {
+    final og = widget.og!;
+    og.apply(m);
+    final ucis = (m['moves'] as List?) ?? [];
+    final g = ch.Chess();
+    final f = <String>[g.fen];
+    final sq = <List<String>>[];
+    for (final u in ucis) {
+      final us = u.toString();
+      if (us.length < 4) continue;
+      final from = us.substring(0, 2);
+      final to = us.substring(2, 4);
+      final promo = us.length > 4 ? us.substring(4, 5) : null;
+      if (!g.move({'from': from, 'to': to, 'promotion': promo ?? 'q'})) break;
+      f.add(g.fen);
+      sq.add([from, to]);
+    }
+    epoch++;
+    setState(() {
+      game = g;
+      fens = f;
+      moveSq = sq;
+      reviews = [];
+      playerWhite = og.color == 'w';
+      flipped = !playerWhite;
+      lastFrom = sq.isEmpty ? null : sq.last[0];
+      lastTo = sq.isEmpty ? null : sq.last[1];
+      selected = null;
+      targets = [];
+      viewIdx = null;
+      showBest = false;
+      hintA = hintB = null;
+      reconnecting = false;
+      oppAway = false;
+      resultShown = false;
+      _rebuild();
+    });
+    _syncClocks(m);
+  }
+
+  Widget _banner() => Container(
+        width: double.infinity,
+        color: const Color(0xFFB45F06),
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        alignment: Alignment.center,
+        child: Text(
+            reconnecting
+                ? 'انقطع الاتصال... جاري إعادة الاتصال'
+                : 'الخصم انقطع اتصاله... بانتظار عودته (30 ثانية)',
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
+      );
+
+  void _upsell(String msg) {
+    showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+              backgroundColor: kPanel,
+              title: const Text('ميزة للمشتركين'),
+              content: Text(msg),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('لاحقاً')),
+                TextButton(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (_) => const PlansPage()));
+                    },
+                    child: const Text('عرض الاشتراكات')),
+              ],
+            ));
+  }
+
+  void _chatSheet() {
+    showModalBottomSheet(
+        context: context,
+        backgroundColor: kPanel,
+        builder: (ctx) => SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Wrap(spacing: 8, runSpacing: 8, children: [
+                  for (int i = 0; i < kChat.length; i++)
+                    ActionChip(
+                      label: Text(kChat[i]),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        Hub.send({'t': 'chat', 'i': i});
+                      },
+                    ),
+                ]),
+              ),
+            ));
   }
 
   void _toast(String t) {
@@ -1443,7 +2565,7 @@ class _GamePageState extends State<GamePage> {
                     child: const Text('قبول')),
               ],
             ));
-    widget.net?.send({'t': ok == true ? 'draw_accept' : 'draw_decline'});
+    Hub.send({'t': ok == true ? 'draw_accept' : 'draw_decline'});
   }
 
   void _onlineEnd(Map m) {
@@ -1452,7 +2574,7 @@ class _GamePageState extends State<GamePage> {
     final delta = (m['delta'] as num?)?.toInt() ?? 0;
     final rating = (m['rating'] as num?)?.toInt() ?? 0;
     final rated = m['rated'] == true;
-    final net = widget.net!;
+    final net = widget.og!;
     if (rated) {
       net.myRating = rating;
       Prefs.setORating(net.cat, rating);
@@ -1562,6 +2684,18 @@ class _GamePageState extends State<GamePage> {
       Prefs.setRating(c, nw);
       n = 'تقييمك (${kCatLabel[c]}): $nw (${d >= 0 ? '+' : ''}$d)';
     }
+    if (resultTag != '*' && game.history.length >= 2) {
+      Prefs.addHistory({
+        'd': DateTime.now().millisecondsSinceEpoch,
+        'o': widget.vsAI
+            ? widget.level
+            : (online ? widget.og!.oppName : 'لاعب محلي'),
+        'r': resultTag,
+        'me': (widget.vsAI || online) ? (playerWhite ? 'w' : 'b') : '',
+        'pgn': _pgn(),
+        'm': widget.vsAI ? 'ai' : (online ? 'on' : 'lo'),
+      });
+    }
     ratingNote = n;
     if (Prefs.sound) HapticFeedback.vibrate();
     Future.delayed(const Duration(milliseconds: 500), () {
@@ -1600,7 +2734,7 @@ class _GamePageState extends State<GamePage> {
                     const SizedBox(height: 10),
                     if (online)
                       _greenBtn('إعادة المباراة', () {
-                        widget.net?.send({'t': 'rematch'});
+                        Hub.send({'t': 'rematch'});
                         Navigator.pop(context);
                         _toast('تم إرسال طلب إعادة المباراة');
                       })
@@ -1808,7 +2942,7 @@ class _GamePageState extends State<GamePage> {
     moveSq.add([from, to]);
     viewIdx = null;
     if (online && !fromNet) {
-      widget.net!.send({'t': 'move', 'from': from, 'to': to, 'promo': promo});
+      Hub.send({'t': 'move', 'from': from, 'to': to, 'promo': promo});
     }
     String san = '$from$to';
     try {
@@ -1870,6 +3004,10 @@ class _GamePageState extends State<GamePage> {
   }
 
   void _reviewSummary() {
+    if (Prefs.tier == 0 && !Prefs.useDaily('review', 1)) {
+      _upsell('المجانيون يمكنهم عرض ملخص مراجعة واحد يومياً. الاشتراك يفتحه بلا حدود.');
+      return;
+    }
     const order = [
       'brilliant',
       'great',
@@ -2026,7 +3164,7 @@ class _GamePageState extends State<GamePage> {
   Future<void> _offerDraw() async {
     if (game.game_over || resultShown) return;
     if (online) {
-      widget.net!.send({'t': 'draw_offer'});
+      Hub.send({'t': 'draw_offer'});
       _toast('تم إرسال عرض التعادل');
       return;
     }
@@ -2071,6 +3209,14 @@ class _GamePageState extends State<GamePage> {
         builder: (ctx, setS) => SafeArea(
           child: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
+              if (online)
+                ListTile(
+                    leading: const Icon(Icons.chat_bubble_outline),
+                    title: const Text('دردشة سريعة'),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _chatSheet();
+                    }),
               ListTile(
                   leading: const Icon(Icons.fact_check_outlined),
                   title: const Text('ملخص المراجعة'),
@@ -2138,6 +3284,10 @@ class _GamePageState extends State<GamePage> {
 
   Future<void> _hint() async {
     if (thinking || game.game_over || resultShown || _aiToMove) return;
+    if (Prefs.tier == 0 && !Prefs.useDaily('hint', 5)) {
+      _upsell('وصلت للحد اليومي للتلميحات (5). الاشتراك يفتح تلميحات غير محدودة.');
+      return;
+    }
     final my = epoch;
     final r = await compute(_bestMoveTask, {'fen': game.fen, 'depth': 3});
     if (!mounted || my != epoch || r == null) return;
@@ -2157,8 +3307,9 @@ class _GamePageState extends State<GamePage> {
     setState(() => thinking = true);
     await Future.delayed(const Duration(milliseconds: 450));
     Map<String, String>? r;
-    if (widget.depth >= 99) {
-      r = await compute(_bestMoveTimed, {'fen': game.fen, 'ms': 3000});
+    if (widget.depth >= 98) {
+      r = await compute(_bestMoveTimed,
+          {'fen': game.fen, 'ms': widget.depth >= 99 ? 3000 : 6000});
     } else {
       r = await compute(_bestMoveTask, {
         'fen': game.fen,
@@ -2227,6 +3378,7 @@ class _GamePageState extends State<GamePage> {
         child: Column(
           children: [
             _moveStrip(),
+            if (reconnecting || oppAway) _banner(),
             const SizedBox(height: 6),
             _playerBar(!bottomWhite),
             const SizedBox(height: 6),
@@ -2375,7 +3527,15 @@ class _GamePageState extends State<GamePage> {
           Padding(
             padding: const EdgeInsets.only(top: 8),
             child: GestureDetector(
-              onTap: () => setState(() => showBest = !showBest),
+              onTap: () {
+                if (!showBest &&
+                    Prefs.tier == 0 &&
+                    !Prefs.useDaily('hint', 5)) {
+                  _upsell('وصلت للحد اليومي للتلميحات (5). الاشتراك يفتح تلميحات غير محدودة.');
+                  return;
+                }
+                setState(() => showBest = !showBest);
+              },
               child: Row(children: [
                 const Icon(Icons.lightbulb_outline,
                     size: 18, color: Colors.white60),
@@ -2508,19 +3668,19 @@ class _GamePageState extends State<GamePage> {
     final isMe = (white == playerWhite);
     if (widget.vsAI) {
       if (isMe) {
-        name = Prefs.name;
+        name = '${Prefs.name} ${kTierBadge[Prefs.tier]}'.trim();
         ratingTxt = '${Prefs.rating(catOf(widget.minutes, widget.inc))}';
       } else {
         name = widget.level;
         ratingTxt = widget.botRating > 0 ? '${widget.botRating}' : '';
       }
     } else if (online) {
-      final nt = widget.net!;
+      final nt = widget.og!;
       if (isMe) {
-        name = Prefs.name;
+        name = '${Prefs.name} ${kTierBadge[Prefs.tier]}'.trim();
         ratingTxt = nt.myRating > 0 ? '${nt.myRating}' : '';
       } else {
-        name = nt.oppName;
+        name = '${nt.oppName} ${kTierBadge[nt.oppTier.clamp(0, 3).toInt()]}'.trim();
         ratingTxt = nt.oppRating > 0 ? '${nt.oppRating}' : '';
       }
     } else {
@@ -2777,7 +3937,12 @@ class _GamePageState extends State<GamePage> {
                 () => setState(() => flipped = !flipped)),
             _nav(Icons.palette_outlined, 'ثيم',
                 () => setState(() {
-                      gTheme = (gTheme + 1) % kThemes.length;
+                      int nx = gTheme;
+                      for (int k = 0; k < kThemes.length; k++) {
+                        nx = (nx + 1) % kThemes.length;
+                        if (nx < 3 || Prefs.tier >= 1) break;
+                      }
+                      gTheme = nx;
                       Prefs.save();
                     })),
             if (!online) _nav(Icons.lightbulb_outline, 'تلميح', _hint),
@@ -2785,7 +3950,7 @@ class _GamePageState extends State<GamePage> {
             _nav(Icons.flag_outlined, 'استسلام', () {
               if (game.game_over || resultShown) return;
               if (online) {
-                widget.net!.send({'t': 'resign'});
+                Hub.send({'t': 'resign'});
                 return;
               }
               final whiteResigns = widget.vsAI
@@ -3040,13 +4205,21 @@ class _SettingsPageState extends State<SettingsPage> {
           const SizedBox(height: 8),
           const Text('ألوان الرقعة', style: TextStyle(fontSize: 16)),
           const SizedBox(height: 10),
-          Row(children: [
+          Wrap(runSpacing: 10, children: [
             for (int i = 0; i < kThemes.length; i++)
               GestureDetector(
-                onTap: () => setState(() {
-                  gTheme = i;
-                  Prefs.save();
-                }),
+                onTap: () {
+                  if (i >= 3 && Prefs.tier < 1) {
+                    Hub.toast('هذا اللون للمشتركين');
+                    Navigator.push(context,
+                        MaterialPageRoute(builder: (_) => const PlansPage()));
+                    return;
+                  }
+                  setState(() {
+                    gTheme = i;
+                    Prefs.save();
+                  });
+                },
                 child: Container(
                   width: 54,
                   height: 54,
@@ -3059,9 +4232,14 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(5),
-                    child: Row(children: [
-                      Expanded(child: Container(color: kThemes[i][0])),
-                      Expanded(child: Container(color: kThemes[i][1])),
+                    child: Stack(children: [
+                      Row(children: [
+                        Expanded(child: Container(color: kThemes[i][0])),
+                        Expanded(child: Container(color: kThemes[i][1])),
+                      ]),
+                      if (i >= 3 && Prefs.tier < 1)
+                        const Center(
+                            child: Icon(Icons.lock, size: 20, color: Colors.black54)),
                     ]),
                   ),
                 ),
