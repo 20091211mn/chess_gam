@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -8,6 +9,7 @@ import 'package:chess/chess.dart' as ch;
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
 
 // ───────────── online server (change after you deploy it) ─────────────
 const kServerUrl = 'wss://YOUR-SERVER.onrender.com';
@@ -80,6 +82,7 @@ const List<String> kPlanIds = [
 const List<List<String>> kPlanFeatures = [
   [],
   [
+    'بدون إعلانات',
     'تلميحات غير محدودة',
     'ملخص مراجعة غير محدود',
     'كل ألوان الرقعة (8)',
@@ -285,6 +288,9 @@ Future<void> main() async {
     await Prefs.load();
   } catch (_) {}
   Store.init();
+  if (Platform.isAndroid) {
+    MobileAds.instance.initialize();
+  }
   if (Prefs.usedOnline) Hub.ensure();
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   runApp(const ChessApp());
@@ -915,6 +921,7 @@ class _MenuPageState extends State<MenuPage> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
+        bottomNavigationBar: const SafeArea(child: AdBanner()),
         body: SafeArea(
           child: ListView(
             padding: const EdgeInsets.all(20),
@@ -966,6 +973,70 @@ class _MenuPageState extends State<MenuPage> {
           ),
         ),
       );
+}
+
+// ───────────── ads (free plan only) ─────────────
+// set to true while testing to show Google's test ads
+const bool kTestAds = false;
+const String kBannerId = 'ca-app-pub-7019939648590037/6914424873';
+const String kTestBannerId = 'ca-app-pub-3940256099942544/6300978111';
+
+class AdBanner extends StatefulWidget {
+  const AdBanner({super.key});
+  @override
+  State<AdBanner> createState() => _AdBannerState();
+}
+
+class _AdBannerState extends State<AdBanner> {
+  BannerAd? _ad;
+  bool _loaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  void _load() {
+    if (!Platform.isAndroid || Prefs.tier > 0) return;
+    final ad = BannerAd(
+      adUnitId: kTestAds ? kTestBannerId : kBannerId,
+      size: AdSize.banner,
+      request: const AdRequest(),
+      listener: BannerAdListener(
+        onAdLoaded: (a) {
+          if (mounted) {
+            setState(() => _loaded = true);
+          } else {
+            a.dispose();
+          }
+        },
+        onAdFailedToLoad: (a, e) {
+          a.dispose();
+        },
+      ),
+    );
+    _ad = ad;
+    ad.load();
+  }
+
+  @override
+  void dispose() {
+    _ad?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ad = _ad;
+    if (Prefs.tier > 0 || !_loaded || ad == null) {
+      return const SizedBox.shrink();
+    }
+    return SizedBox(
+        width: ad.size.width.toDouble(),
+        height: ad.size.height.toDouble(),
+        child: AdWidget(ad: ad));
+  }
 }
 
 // ───────────── bots ─────────────
@@ -1070,6 +1141,7 @@ class _BotsPageState extends State<BotsPage> {
   Widget build(BuildContext context) {
     final tc = kTCs[Prefs.tcIdx];
     return Scaffold(
+      bottomNavigationBar: const SafeArea(child: AdBanner()),
       appBar: AppBar(
           backgroundColor: kPanel, title: const Text('العب ضد الكمبيوتر')),
       body: ListView(padding: const EdgeInsets.all(16), children: [
@@ -1203,7 +1275,7 @@ class _PlansPageState extends State<PlansPage> {
                   const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
         ),
         const Text(
-            'المجاني: 5 تلميحات يومياً، ملخص مراجعة واحد يومياً، 3 ألوان رقعة، حتى 10 أصدقاء.',
+            'المجاني: مع إعلانات بانر، 5 تلميحات يومياً، ملخص مراجعة واحد يومياً، 3 ألوان رقعة، حتى 10 أصدقاء.',
             style: TextStyle(fontSize: 12, color: Colors.white54)),
         const SizedBox(height: 12),
         _card(1),
@@ -1816,6 +1888,7 @@ class HistoryPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final list = Prefs.history();
     return Scaffold(
+      bottomNavigationBar: const SafeArea(child: AdBanner()),
       appBar: AppBar(
           backgroundColor: kPanel, title: const Text('سجل المباريات')),
       body: list.isEmpty
