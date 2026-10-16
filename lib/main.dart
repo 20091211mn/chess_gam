@@ -154,6 +154,7 @@ class Prefs {
   static int storeTier = 0;
   static int serverTier = 0;
   static int serverUntil = 0;
+  static String lastError = '';
 
   static int get tier {
     int t = storeTier;
@@ -185,6 +186,7 @@ class Prefs {
     storeTier = p.getInt('stier') ?? 0;
     serverTier = p.getInt('svtier') ?? 0;
     serverUntil = p.getInt('svuntil') ?? 0;
+    lastError = p.getString('lasterr') ?? '';
     gTheme = p.getInt('theme') ?? 0;
     if (gTheme < 0 || gTheme >= kThemes.length) gTheme = 0;
     if (gTheme >= 3 && tier < 1) gTheme = 0;
@@ -206,6 +208,7 @@ class Prefs {
     p.setInt('stier', storeTier);
     p.setInt('svtier', serverTier);
     p.setInt('svuntil', serverUntil);
+    p.setString('lasterr', lastError);
     p.setInt('theme', gTheme);
   }
 
@@ -287,6 +290,16 @@ Future<void> main() async {
   try {
     await Prefs.load();
   } catch (_) {}
+  FlutterError.onError = (d) {
+    FlutterError.presentError(d);
+    Prefs.lastError = d.exceptionAsString();
+    Prefs.save();
+  };
+  WidgetsBinding.instance.platformDispatcher.onError = (e, st) {
+    Prefs.lastError = '$e';
+    Prefs.save();
+    return true;
+  };
   Store.init();
   if (Platform.isAndroid) {
     MobileAds.instance.initialize();
@@ -4267,6 +4280,33 @@ class _SettingsPageState extends State<SettingsPage> {
         appBar: AppBar(
             backgroundColor: kPanel, title: const Text('الإحصائيات والإعدادات')),
         body: ListView(padding: const EdgeInsets.all(16), children: [
+          if (Prefs.lastError.isNotEmpty)
+            Container(
+              margin: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                  color: const Color(0xFF5A2A2A),
+                  borderRadius: BorderRadius.circular(10)),
+              child: Row(children: [
+                Expanded(
+                  child: Text('آخر خطأ في التطبيق:\n${Prefs.lastError}',
+                      maxLines: 6,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12)),
+                ),
+                IconButton(
+                    icon: const Icon(Icons.copy, size: 18),
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: Prefs.lastError));
+                    }),
+                IconButton(
+                    icon: const Icon(Icons.close, size: 18),
+                    onPressed: () => setState(() {
+                          Prefs.lastError = '';
+                          Prefs.save();
+                        })),
+              ]),
+            ),
           _stat('ضد الكمبيوتر', 'ai'),
           _stat('أونلاين', 'on'),
           Align(
