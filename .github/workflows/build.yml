@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [full, lite, iap, ads, adsnoinit]
+        variant: [full, lite, iap, ads, adsnoinit, adstestid]
     runs-on: ubuntu-latest
     env:
       VARIANT: ${{ matrix.variant }}
@@ -34,7 +34,7 @@ jobs:
           s=open('pubspec.yaml').read()
           if v in ('lite','iap'):
               s=s.replace('  google_mobile_ads: ^9.1.0','  google_mobile_ads:\n    path: stubs/google_mobile_ads')
-          if v in ('lite','ads','adsnoinit'):
+          if v in ('lite','ads','adsnoinit','adstestid'):
               s=s.replace('  in_app_purchase: ^3.2.0','  in_app_purchase:\n    path: stubs/in_app_purchase')
           open('pubspec.yaml','w').write(s)
           PY
@@ -49,8 +49,9 @@ jobs:
           s=open(p).read()
           s=s.replace('<application','<uses-permission android:name="android.permission.INTERNET"/>\n    <application android:usesCleartextTraffic="true"',1)
           s=re.sub(r'android:label="[^"]*"','android:label="Chess"',s,count=1)
-          if v in ('full','ads','adsnoinit'):
-              s=s.replace('</application>','<meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-7019939648590037~6451390449"/>\n    </application>',1)
+          if v in ('full','ads','adsnoinit','adstestid'):
+              appid='ca-app-pub-3940256099942544~3347511713' if v=='adstestid' else 'ca-app-pub-7019939648590037~6451390449'
+              s=s.replace('</application>','<meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="'+appid+'"/>\n    </application>',1)
           open(p,'w').write(s)
           PY
           cat android/app/src/main/AndroidManifest.xml
@@ -74,7 +75,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [full, lite, iap, ads, adsnoinit]
+        variant: [full, lite, iap, ads, adsnoinit, adstestid]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
