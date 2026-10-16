@@ -5,7 +5,9 @@ on:
     paths-ignore:
       - 'server/**'
   workflow_dispatch:
+
 jobs:
+  # Full Android build (ads + store purchases)
   android:
     runs-on: ubuntu-latest
     steps:
@@ -42,6 +44,50 @@ jobs:
           name: chess-apk
           path: build/app/outputs/flutter-apk/app-release.apk
 
+  # Lite Android build: same game, but WITHOUT the ads and store plugins
+  android-lite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Use stub plugins (no ads, no store)
+        run: |
+          python3 - <<'PY'
+          s=open('pubspec.yaml').read()
+          s=s.replace('  in_app_purchase: ^3.2.0','  in_app_purchase:\n    path: stubs/in_app_purchase')
+          s=s.replace('  google_mobile_ads: ^9.1.0','  google_mobile_ads:\n    path: stubs/google_mobile_ads')
+          open('pubspec.yaml','w').write(s)
+          PY
+          cat pubspec.yaml
+      - run: flutter create --platforms=android --project-name chess_game --org com.example .
+      - name: Android manifest tweaks (internet, label)
+        run: |
+          python3 - <<'PY'
+          import re
+          p='android/app/src/main/AndroidManifest.xml'
+          s=open(p).read()
+          s=s.replace('<application','<uses-permission android:name="android.permission.INTERNET"/>\n    <application android:usesCleartextTraffic="true"',1)
+          s=re.sub(r'android:label="[^"]*"','android:label="Chess"',s,count=1)
+          open(p,'w').write(s)
+          PY
+      - name: Use fixed signing key
+        run: |
+          mkdir -p ~/.android
+          cp debug.keystore ~/.android/debug.keystore
+      - run: flutter pub get
+      - run: flutter build apk --release --build-number=${{ github.run_number }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chess-apk-lite
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+  # iPhone build (no ads / store plugins: they are not usable on a sideloaded iPhone app anyway)
   ios:
     runs-on: macos-latest
     steps:
@@ -49,21 +95,19 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+      - name: Use stub plugins (no ads, no store)
+        run: |
+          python3 - <<'PY'
+          s=open('pubspec.yaml').read()
+          s=s.replace('  in_app_purchase: ^3.2.0','  in_app_purchase:\n    path: stubs/in_app_purchase')
+          s=s.replace('  google_mobile_ads: ^9.1.0','  google_mobile_ads:\n    path: stubs/google_mobile_ads')
+          open('pubspec.yaml','w').write(s)
+          PY
+          cat pubspec.yaml
       - run: flutter create --platforms=ios --project-name chess_game --org com.example .
       - name: iOS app name
-        run: |
-          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Chess" ios/Runner/Info.plist || true
-          /usr/libexec/PlistBuddy -c "Add :GADApplicationIdentifier string ca-app-pub-3940256099942544~1458002511" ios/Runner/Info.plist || true
+        run: /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Chess" ios/Runner/Info.plist || true
       - run: flutter pub get
-      - name: Generate Podfile
-        run: flutter build ios --config-only --release --no-codesign || true
-      - name: Prepare CocoaPods (explicit iOS version + fresh specs)
-        run: |
-          cd ios
-          ls
-          sed -i '' -e "s/^# platform :ios.*/platform :ios, '15.0'/" -e "s/^platform :ios.*/platform :ios, '15.0'/" Podfile
-          pod repo update
-          pod install
       - run: flutter build ios --release --no-codesign --build-number=${{ github.run_number }}
       - name: Package unsigned IPA
         run: |

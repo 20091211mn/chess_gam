@@ -155,6 +155,7 @@ class Prefs {
   static int serverTier = 0;
   static int serverUntil = 0;
   static String lastError = '';
+  static bool safeMode = false;
 
   static int get tier {
     int t = storeTier;
@@ -187,6 +188,7 @@ class Prefs {
     serverTier = p.getInt('svtier') ?? 0;
     serverUntil = p.getInt('svuntil') ?? 0;
     lastError = p.getString('lasterr') ?? '';
+    safeMode = p.getBool('safe') ?? false;
     gTheme = p.getInt('theme') ?? 0;
     if (gTheme < 0 || gTheme >= kThemes.length) gTheme = 0;
     if (gTheme >= 3 && tier < 1) gTheme = 0;
@@ -209,6 +211,7 @@ class Prefs {
     p.setInt('svtier', serverTier);
     p.setInt('svuntil', serverUntil);
     p.setString('lasterr', lastError);
+    p.setBool('safe', safeMode);
     p.setInt('theme', gTheme);
   }
 
@@ -285,6 +288,8 @@ class Prefs {
   }
 }
 
+AppLifecycleListener? _lifecycleGuard;
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   try {
@@ -300,10 +305,21 @@ Future<void> main() async {
     Prefs.save();
     return true;
   };
-  Store.init();
-  if (Platform.isAndroid) {
-    MobileAds.instance.initialize();
+  // crash guard: if the previous launch never finished, start in safe mode
+  final lp = Prefs.prefs;
+  if (lp != null && (lp.getBool('launching') ?? false)) {
+    Prefs.safeMode = true;
+    Prefs.save();
   }
+  lp?.setBool('launching', true);
+  Future.delayed(const Duration(seconds: 8), () {
+    Prefs.prefs?.setBool('launching', false);
+  });
+  _lifecycleGuard = AppLifecycleListener(onPause: () {
+    Prefs.prefs?.setBool('launching', false);
+  });
+  Store.init();
+  Future.delayed(const Duration(seconds: 2), Ads.init);
   if (Prefs.usedOnline) Hub.ensure();
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   runApp(const ChessApp());
@@ -398,6 +414,10 @@ class Store {
   static String lastError = '';
 
   static Future<void> init() async {
+    if (Prefs.safeMode) {
+      tick.value++;
+      return;
+    }
     try {
       available = await _iap.isAvailable();
       if (!available) {
@@ -994,6 +1014,20 @@ const bool kTestAds = false;
 const String kBannerId = 'ca-app-pub-7019939648590037/6914424873';
 const String kTestBannerId = 'ca-app-pub-3940256099942544/6300978111';
 
+class Ads {
+  static final ValueNotifier<bool> ready = ValueNotifier(false);
+  static bool _started = false;
+
+  static Future<void> init() async {
+    if (_started || Prefs.safeMode || !Platform.isAndroid) return;
+    _started = true;
+    try {
+      await MobileAds.instance.initialize();
+      ready.value = true;
+    } catch (_) {}
+  }
+}
+
 class AdBanner extends StatefulWidget {
   const AdBanner({super.key});
   @override
@@ -1007,11 +1041,16 @@ class _AdBannerState extends State<AdBanner> {
   @override
   void initState() {
     super.initState();
-    _load();
+    Ads.ready.addListener(_onReady);
+    _onReady();
+  }
+
+  void _onReady() {
+    if (Ads.ready.value && _ad == null) _load();
   }
 
   void _load() {
-    if (!Platform.isAndroid || Prefs.tier > 0) return;
+    if (!Platform.isAndroid || Prefs.tier > 0 || Prefs.safeMode) return;
     final ad = BannerAd(
       adUnitId: kTestAds ? kTestBannerId : kBannerId,
       size: AdSize.banner,
@@ -1035,6 +1074,7 @@ class _AdBannerState extends State<AdBanner> {
 
   @override
   void dispose() {
+    Ads.ready.removeListener(_onReady);
     _ad?.dispose();
     super.dispose();
   }
@@ -4280,6 +4320,25 @@ class _SettingsPageState extends State<SettingsPage> {
         appBar: AppBar(
             backgroundColor: kPanel, title: const Text('الإحصائيات والإعدادات')),
         body: ListView(padding: const EdgeInsets.all(16), children: [
+          if (Prefs.safeMode)
+            Container(
+              margin: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                  color: const Color(0xFF5A3A12),
+                  borderRadius: BorderRadius.circular(10)),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text(
+                    'الوضع الآمن: تم تعطيل الإعلانات ومتجر الاشتراكات لأن التطبيق تعطل في المرة السابقة.',
+                    style: TextStyle(fontSize: 13)),
+                TextButton(
+                    onPressed: () => setState(() {
+                          Prefs.safeMode = false;
+                          Prefs.save();
+                        }),
+                    child: const Text('إعادة تفعيلها (أعد فتح التطبيق بعدها)')),
+              ]),
+            ),
           if (Prefs.lastError.isNotEmpty)
             Container(
               margin: const EdgeInsets.only(bottom: 10),

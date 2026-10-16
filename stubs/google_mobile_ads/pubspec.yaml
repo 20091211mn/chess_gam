@@ -1,0 +1,9 @@
+name: google_mobile_ads
+description: Stub used for builds without ads (lite Android build and iOS).
+version: 0.0.1
+publish_to: 'none'
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+dependencies:
+  flutter:
+    sdk: flutter
