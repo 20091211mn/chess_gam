@@ -25,4 +25,13 @@ adb logcat -d | grep -E -B2 -A 25 "Fatal signal|SIGSEGV|SIGABRT|Abort message" |
 echo "=============== ERRORS FROM ADS / BILLING / FLUTTER ==============="
 adb logcat -d | grep -iE "admob|mobileads|gads|billing|flutter" | grep -iE "error|exception|fail|crash" | head -40
 
+if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+  {
+    echo "### Variant $VARIANT: $( [ -n "$PID" ] && echo RUNNING || echo CRASHED )"
+    echo '```'
+    adb logcat -d | grep -E "FATAL EXCEPTION|Caused by|Exception:|Error:|Abort message|Fatal signal" | head -15
+    echo '```'
+  } >> "$GITHUB_STEP_SUMMARY"
+fi
+
 [ -n "$PID" ] || exit 1

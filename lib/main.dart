@@ -1011,6 +1011,8 @@ class _MenuPageState extends State<MenuPage> {
 // ───────────── ads (free plan only) ─────────────
 // set to true while testing to show Google's test ads
 const bool kTestAds = false;
+// CI diagnostic: build with --dart-define=ADS_INIT=false to skip ads initialisation
+const bool kAdsInit = bool.fromEnvironment('ADS_INIT', defaultValue: true);
 const String kBannerId = 'ca-app-pub-7019939648590037/6914424873';
 const String kTestBannerId = 'ca-app-pub-3940256099942544/6300978111';
 
@@ -1019,7 +1021,7 @@ class Ads {
   static bool _started = false;
 
   static Future<void> init() async {
-    if (_started || Prefs.safeMode || !Platform.isAndroid) return;
+    if (_started || !kAdsInit || Prefs.safeMode || !Platform.isAndroid) return;
     _started = true;
     try {
       await MobileAds.instance.initialize();

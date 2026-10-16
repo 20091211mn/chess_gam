@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [full, lite, iap, ads]
+        variant: [full, lite, iap, ads, adsnoinit]
     runs-on: ubuntu-latest
     env:
       VARIANT: ${{ matrix.variant }}
@@ -34,7 +34,7 @@ jobs:
           s=open('pubspec.yaml').read()
           if v in ('lite','iap'):
               s=s.replace('  google_mobile_ads: ^9.1.0','  google_mobile_ads:\n    path: stubs/google_mobile_ads')
-          if v in ('lite','ads'):
+          if v in ('lite','ads','adsnoinit'):
               s=s.replace('  in_app_purchase: ^3.2.0','  in_app_purchase:\n    path: stubs/in_app_purchase')
           open('pubspec.yaml','w').write(s)
           PY
@@ -49,7 +49,7 @@ jobs:
           s=open(p).read()
           s=s.replace('<application','<uses-permission android:name="android.permission.INTERNET"/>\n    <application android:usesCleartextTraffic="true"',1)
           s=re.sub(r'android:label="[^"]*"','android:label="Chess"',s,count=1)
-          if v in ('full','ads'):
+          if v in ('full','ads','adsnoinit'):
               s=s.replace('</application>','<meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-7019939648590037~6451390449"/>\n    </application>',1)
           open(p,'w').write(s)
           PY
@@ -61,7 +61,7 @@ jobs:
       - run: flutter pub get
       - name: Check our code (lib only)
         run: flutter analyze lib --no-fatal-infos --no-fatal-warnings
-      - run: flutter build apk --release --no-shrink --build-number=${{ github.run_number }}
+      - run: flutter build apk --release --no-shrink --build-number=${{ github.run_number }} ${{ matrix.variant == 'adsnoinit' && '--dart-define=ADS_INIT=false' || '' }}
       - uses: actions/upload-artifact@v4
         with:
           name: chess-apk-${{ matrix.variant }}
@@ -74,7 +74,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [full, lite, iap, ads]
+        variant: [full, lite, iap, ads, adsnoinit]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -94,6 +94,8 @@ jobs:
           target: google_apis
           disable-animations: true
           script: bash .github/smoke.sh
+        env:
+          VARIANT: ${{ matrix.variant }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
