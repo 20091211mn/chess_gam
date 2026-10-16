@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [full, lite, iap, ads, adsnoinit, adstestid]
+        variant: [full, lite, iap, ads]
     runs-on: ubuntu-latest
     env:
       VARIANT: ${{ matrix.variant }}
@@ -55,6 +55,24 @@ jobs:
           open(p,'w').write(s)
           PY
           cat android/app/src/main/AndroidManifest.xml
+      - name: Disable R8 minify (it breaks WorkManager used by the ads SDK)
+        run: |
+          python3 - <<'PY'
+          import os,re
+          kts='android/app/build.gradle.kts'
+          grv='android/app/build.gradle'
+          if os.path.exists(kts):
+              p=kts
+              s=open(p).read()
+              n=re.sub(r'(buildTypes\s*\{\s*release\s*\{)', r'\1\n            isMinifyEnabled = false\n            isShrinkResources = false', s, count=1)
+          else:
+              p=grv
+              s=open(p).read()
+              n=re.sub(r'(buildTypes\s*\{\s*release\s*\{)', r'\1\n            minifyEnabled false\n            shrinkResources false', s, count=1)
+          print('PATCHED' if n!=s else 'NOT PATCHED - pattern not found')
+          open(p,'w').write(n)
+          print(n)
+          PY
       - name: Use fixed signing key (so updates install over the old app)
         run: |
           mkdir -p ~/.android
@@ -75,7 +93,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [full, lite, iap, ads, adsnoinit, adstestid]
+        variant: [full, lite, iap, ads]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
