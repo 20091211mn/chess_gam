@@ -7,9 +7,16 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Full Android build (ads + store purchases)
+  # Android: 4 variants so we can see exactly which plugin breaks the app
+  #   full = ads + store | lite = neither | iap = store only | ads = ads only
   android:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [full, lite, iap, ads]
     runs-on: ubuntu-latest
+    env:
+      VARIANT: ${{ matrix.variant }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -19,77 +26,80 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-      - run: flutter create --platforms=android --project-name chess_game --org com.example .
-      - name: Android manifest tweaks (internet, label, AdMob app id)
+      - name: Choose plugins for this variant
         run: |
           python3 - <<'PY'
-          import re
+          import os
+          v=os.environ['VARIANT']
+          s=open('pubspec.yaml').read()
+          if v in ('lite','iap'):
+              s=s.replace('  google_mobile_ads: ^9.1.0','  google_mobile_ads:\n    path: stubs/google_mobile_ads')
+          if v in ('lite','ads'):
+              s=s.replace('  in_app_purchase: ^3.2.0','  in_app_purchase:\n    path: stubs/in_app_purchase')
+          open('pubspec.yaml','w').write(s)
+          PY
+          cat pubspec.yaml
+      - run: flutter create --platforms=android --project-name chess_game --org com.example .
+      - name: Android manifest tweaks
+        run: |
+          python3 - <<'PY'
+          import os,re
+          v=os.environ['VARIANT']
           p='android/app/src/main/AndroidManifest.xml'
           s=open(p).read()
           s=s.replace('<application','<uses-permission android:name="android.permission.INTERNET"/>\n    <application android:usesCleartextTraffic="true"',1)
           s=re.sub(r'android:label="[^"]*"','android:label="Chess"',s,count=1)
-          s=s.replace('</application>','<meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-7019939648590037~6451390449"/>\n    </application>',1)
+          if v in ('full','ads'):
+              s=s.replace('</application>','<meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-7019939648590037~6451390449"/>\n    </application>',1)
           open(p,'w').write(s)
           PY
           cat android/app/src/main/AndroidManifest.xml
-          grep -q "com.google.android.gms.ads.APPLICATION_ID" android/app/src/main/AndroidManifest.xml
       - name: Use fixed signing key (so updates install over the old app)
         run: |
           mkdir -p ~/.android
           cp debug.keystore ~/.android/debug.keystore
       - run: flutter pub get
-      - name: Check code (lists ALL compile errors at once)
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+      - name: Check our code (lib only)
+        run: flutter analyze lib --no-fatal-infos --no-fatal-warnings
       - run: flutter build apk --release --no-shrink --build-number=${{ github.run_number }}
       - uses: actions/upload-artifact@v4
         with:
-          name: chess-apk
+          name: chess-apk-${{ matrix.variant }}
           path: build/app/outputs/flutter-apk/app-release.apk
 
-  # Lite Android build: same game, but WITHOUT the ads and store plugins
-  android-lite:
+  # Runs each APK on a real Android emulator inside GitHub and prints the crash log
+  android-test:
+    needs: android
+    if: ${{ !cancelled() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [full, lite, iap, ads]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/download-artifact@v4
         with:
-          distribution: temurin
-          java-version: '17'
-      - uses: subosito/flutter-action@v2
+          name: chess-apk-${{ matrix.variant }}
+          path: apk
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
         with:
-          channel: stable
-      - name: Use stub plugins (no ads, no store)
-        run: |
-          python3 - <<'PY'
-          s=open('pubspec.yaml').read()
-          s=s.replace('  in_app_purchase: ^3.2.0','  in_app_purchase:\n    path: stubs/in_app_purchase')
-          s=s.replace('  google_mobile_ads: ^9.1.0','  google_mobile_ads:\n    path: stubs/google_mobile_ads')
-          open('pubspec.yaml','w').write(s)
-          PY
-          cat pubspec.yaml
-      - run: flutter create --platforms=android --project-name chess_game --org com.example .
-      - name: Android manifest tweaks (internet, label)
-        run: |
-          python3 - <<'PY'
-          import re
-          p='android/app/src/main/AndroidManifest.xml'
-          s=open(p).read()
-          s=s.replace('<application','<uses-permission android:name="android.permission.INTERNET"/>\n    <application android:usesCleartextTraffic="true"',1)
-          s=re.sub(r'android:label="[^"]*"','android:label="Chess"',s,count=1)
-          open(p,'w').write(s)
-          PY
-      - name: Use fixed signing key
-        run: |
-          mkdir -p ~/.android
-          cp debug.keystore ~/.android/debug.keystore
-      - run: flutter pub get
-      - name: Check code (lists ALL compile errors at once)
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings
-      - run: flutter build apk --release --build-number=${{ github.run_number }}
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: bash .github/smoke.sh
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: chess-apk-lite
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: screen-${{ matrix.variant }}
+          path: screen.png
+          if-no-files-found: ignore
 
   # iPhone build (no ads / store plugins: they are not usable on a sideloaded iPhone app anyway)
   ios:
