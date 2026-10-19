@@ -1,0 +1,50 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signed() { return request.auth != null; }
+
+    // player profiles (name, friend code, ratings, plan)
+    match /users/{uid} {
+      allow read: if signed();
+      allow create, update: if signed() && request.auth.uid == uid;
+    }
+
+    // friend code -> uid
+    match /codes/{code} {
+      allow get: if signed();
+      allow create: if signed() && request.resource.data.uid == request.auth.uid;
+    }
+
+    // friend requests (doc id = fromUid_toUid)
+    match /requests/{id} {
+      allow read: if signed() && (resource.data.from == request.auth.uid || resource.data.to == request.auth.uid);
+      allow create: if signed() && request.resource.data.from == request.auth.uid;
+      allow update, delete: if signed() && (resource.data.from == request.auth.uid || resource.data.to == request.auth.uid);
+    }
+
+    // match challenges between friends
+    match /challenges/{id} {
+      allow read: if signed() && (resource.data.from == request.auth.uid || resource.data.to == request.auth.uid);
+      allow create: if signed() && request.resource.data.from == request.auth.uid;
+      allow update, delete: if signed() && (resource.data.from == request.auth.uid || resource.data.to == request.auth.uid);
+    }
+
+    // matchmaking queue
+    match /queue/{id} {
+      allow read, create, update, delete: if signed();
+    }
+
+    // games
+    match /games/{id} {
+      allow read: if signed();
+      allow create: if signed() && (request.resource.data.w == request.auth.uid || request.resource.data.b == request.auth.uid);
+      allow update: if signed() && (resource.data.w == request.auth.uid || resource.data.b == request.auth.uid);
+    }
+
+    // gift codes (you create them from the Firebase console)
+    match /giftcodes/{code} {
+      allow get: if signed();
+      allow update: if signed() && resource.data.used == null && request.resource.data.used == request.auth.uid;
+    }
+  }
+}

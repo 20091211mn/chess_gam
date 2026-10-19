@@ -7,13 +7,13 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Android: 4 variants so we can see exactly which plugin breaks the app
-  #   full = ads + store | lite = neither | iap = store only | ads = ads only
+  # Android variants:
+  #   full = ads + store + Firebase online | nofb = ads + store, no online | lite = nothing extra
   android:
     strategy:
       fail-fast: false
       matrix:
-        variant: [full, lite, iap, ads]
+        variant: [full, nofb, lite]
     runs-on: ubuntu-latest
     env:
       VARIANT: ${{ matrix.variant }}
@@ -32,14 +32,24 @@ jobs:
           import os
           v=os.environ['VARIANT']
           s=open('pubspec.yaml').read()
-          if v in ('lite','iap'):
+          if v=='lite':
               s=s.replace('  google_mobile_ads: ^9.1.0','  google_mobile_ads:\n    path: stubs/google_mobile_ads')
-          if v in ('lite','ads','adsnoinit','adstestid'):
               s=s.replace('  in_app_purchase: ^3.2.0','  in_app_purchase:\n    path: stubs/in_app_purchase')
+          if v in ('lite','nofb'):
+              lines=[l for l in s.split('\n') if not any(l.startswith('  '+d+':') for d in ('firebase_core','firebase_auth','cloud_firestore'))]
+              s='\n'.join(lines)
+              open('lib/backend_impl.dart','w').write("export 'backend_none.dart';\n")
+              os.remove('lib/backend_firebase.dart')
+              os.remove('lib/firebase_options_gen.dart')
           open('pubspec.yaml','w').write(s)
           PY
           cat pubspec.yaml
-      - run: flutter create --platforms=android --project-name chess_game --org com.example .
+      - name: Firebase config (from google-services.json)
+        if: ${{ matrix.variant == 'full' }}
+        run: |
+          python3 .github/gen_firebase.py android
+          cat lib/firebase_options_gen.dart | sed 's/apiKey: .*/apiKey: (hidden),/'
+      - run: flutter create --platforms=android --project-name chess_game --org com.shatranj .
       - name: Android manifest tweaks
         run: |
           python3 - <<'PY'
@@ -49,9 +59,8 @@ jobs:
           s=open(p).read()
           s=s.replace('<application','<uses-permission android:name="android.permission.INTERNET"/>\n    <application android:usesCleartextTraffic="true"',1)
           s=re.sub(r'android:label="[^"]*"','android:label="Chess"',s,count=1)
-          if v in ('full','ads','adsnoinit','adstestid'):
-              appid='ca-app-pub-3940256099942544~3347511713' if v=='adstestid' else 'ca-app-pub-7019939648590037~6451390449'
-              s=s.replace('</application>','<meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="'+appid+'"/>\n    </application>',1)
+          if v in ('full','nofb'):
+              s=s.replace('</application>','<meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-7019939648590037~6451390449"/>\n    </application>',1)
           open(p,'w').write(s)
           PY
           cat android/app/src/main/AndroidManifest.xml
@@ -80,7 +89,7 @@ jobs:
       - run: flutter pub get
       - name: Check our code (lib only)
         run: flutter analyze lib --no-fatal-infos --no-fatal-warnings
-      - run: flutter build apk --release --no-shrink --build-number=${{ github.run_number }} ${{ matrix.variant == 'adsnoinit' && '--dart-define=ADS_INIT=false' || '' }}
+      - run: flutter build apk --release --no-shrink --build-number=${{ github.run_number }}
       - uses: actions/upload-artifact@v4
         with:
           name: chess-apk-${{ matrix.variant }}
@@ -93,7 +102,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [full, lite, iap, ads]
+        variant: [full, nofb, lite]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -107,14 +116,14 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
       - uses: reactivecircus/android-emulator-runner@v2
+        env:
+          VARIANT: ${{ matrix.variant }}
         with:
           api-level: 34
           arch: x86_64
           target: google_apis
           disable-animations: true
           script: bash .github/smoke.sh
-        env:
-          VARIANT: ${{ matrix.variant }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -122,7 +131,7 @@ jobs:
           path: screen.png
           if-no-files-found: ignore
 
-  # iPhone build (no ads / store plugins: they are not usable on a sideloaded iPhone app anyway)
+  # iPhone (stable): no ads/store/online plugins
   ios:
     runs-on: macos-latest
     steps:
@@ -130,16 +139,21 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-      - name: Use stub plugins (no ads, no store)
+      - name: Use stub plugins (no ads, no store, no online)
         run: |
           python3 - <<'PY'
+          import os
           s=open('pubspec.yaml').read()
           s=s.replace('  in_app_purchase: ^3.2.0','  in_app_purchase:\n    path: stubs/in_app_purchase')
           s=s.replace('  google_mobile_ads: ^9.1.0','  google_mobile_ads:\n    path: stubs/google_mobile_ads')
-          open('pubspec.yaml','w').write(s)
+          lines=[l for l in s.split('\n') if not any(l.startswith('  '+d+':') for d in ('firebase_core','firebase_auth','cloud_firestore'))]
+          open('pubspec.yaml','w').write('\n'.join(lines))
+          open('lib/backend_impl.dart','w').write("export 'backend_none.dart';\n")
+          os.remove('lib/backend_firebase.dart')
+          os.remove('lib/firebase_options_gen.dart')
           PY
           cat pubspec.yaml
-      - run: flutter create --platforms=ios --project-name chess_game --org com.example .
+      - run: flutter create --platforms=ios --project-name chess_game --org com.shatranj .
       - name: iOS app name
         run: /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Chess" ios/Runner/Info.plist || true
       - run: flutter pub get
@@ -152,4 +166,37 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: chess-ipa
+          path: chess.ipa
+
+  # iPhone with Firebase online (experimental: if it fails, use the stable one above)
+  ios-firebase:
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Stub ads/store, keep Firebase
+        run: |
+          python3 - <<'PY'
+          s=open('pubspec.yaml').read()
+          s=s.replace('  in_app_purchase: ^3.2.0','  in_app_purchase:\n    path: stubs/in_app_purchase')
+          s=s.replace('  google_mobile_ads: ^9.1.0','  google_mobile_ads:\n    path: stubs/google_mobile_ads')
+          open('pubspec.yaml','w').write(s)
+          PY
+          python3 .github/gen_firebase.py ios
+      - run: flutter create --platforms=ios --project-name chess_game --org com.shatranj .
+      - name: iOS app name
+        run: /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Chess" ios/Runner/Info.plist || true
+      - run: flutter pub get
+      - run: flutter build ios --release --no-codesign --build-number=${{ github.run_number }}
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p Payload
+          cp -r build/ios/iphoneos/Runner.app Payload/Runner.app
+          zip -qr chess.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chess-ipa-firebase
           path: chess.ipa

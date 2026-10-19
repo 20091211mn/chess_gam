@@ -10,6 +10,8 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
+import 'backend_api.dart';
+import 'backend_impl.dart';
 
 // ───────────── online server (change after you deploy it) ─────────────
 const kServerUrl = 'wss://YOUR-SERVER.onrender.com';
@@ -504,7 +506,7 @@ class Store {
 final GlobalKey<NavigatorState> navKey = GlobalKey<NavigatorState>();
 
 class Hub {
-  static Net? net;
+  static Backend? be;
   static bool want = false;
   static bool inGame = false;
   static bool _up = false;
@@ -520,7 +522,7 @@ class Hub {
   static final ValueNotifier<int> tick = ValueNotifier(0);
   static Timer? _rt;
 
-  static bool get connected => net != null && !net!.closed && _up;
+  static bool get connected => be != null && _up;
 
   static Map _helloMsg() => {
         't': 'hello',
@@ -532,38 +534,32 @@ class Hub {
 
   static void ensure() {
     want = true;
-    final url = Prefs.serverUrl.trim();
-    if (url.isEmpty || url.contains('YOUR-SERVER')) return;
-    if (net != null && !net!.closed) return;
-    try {
-      final n = Net(url);
-      net = n;
-      n.onMsg = (m) {
-        if (!identical(net, n)) return;
-        _onMsg(m);
-      };
-      n.send(_helloMsg());
-      n.send({'t': 'friends'});
-    } catch (_) {
-      net = null;
-    }
+    if (be != null) return;
+    final b = createBackend();
+    be = b;
+    b.start((m) {
+      if (!identical(be, b)) return;
+      _onMsg(m);
+    });
+    b.send(_helloMsg());
+    b.send({'t': 'friends'});
   }
 
   static void refreshHello() {
-    net?.send(_helloMsg());
+    be?.send(_helloMsg());
   }
 
   static void send(Map m) {
     ensure();
-    net?.send(m);
+    be?.send(m);
   }
 
   static void reset() {
     _rt?.cancel();
-    final old = net;
-    net = null;
+    final old = be;
+    be = null;
     _up = false;
-    old?.close();
+    old?.stop();
     ensure();
     tick.value++;
   }
@@ -742,9 +738,16 @@ class Hub {
           pending.add(m);
         }
         break;
+      case 'unavailable':
+        _up = false;
+        be = null;
+        status = '';
+        tick.value++;
+        toast((m['msg'] ?? 'اللعب الأونلاين غير متاح').toString());
+        break;
       case 'closed':
         _up = false;
-        net = null;
+        be = null;
         status = '';
         tick.value++;
         gameHandler?.call(m);
@@ -2497,6 +2500,7 @@ class _GamePageState extends State<GamePage> {
   void dispose() {
     if (widget.og != null) {
       if (!resultShown && !game.game_over) Hub.send({'t': 'resign'});
+      Hub.send({'t': 'leave'});
       Hub.clearGame();
     }
     _sc.dispose();
@@ -2927,7 +2931,22 @@ class _GamePageState extends State<GamePage> {
   }
 
   void _checkEnd() {
-    if (online) return;
+    if (online) {
+      String? res;
+      String? why;
+      if (game.in_checkmate) {
+        res = game.turn == ch.Color.WHITE ? '0-1' : '1-0';
+        why = 'checkmate';
+      } else if (game.in_stalemate) {
+        res = '1/2-1/2';
+        why = 'stalemate';
+      } else if (game.in_draw) {
+        res = '1/2-1/2';
+        why = 'draw';
+      }
+      if (res != null) Hub.send({'t': 'game_over', 'result': res, 'reason': why});
+      return;
+    }
     if (game.in_checkmate) {
       _end(
           game.turn == ch.Color.WHITE

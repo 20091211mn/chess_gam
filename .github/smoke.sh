@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs inside the Android emulator: installs the APK, launches it, prints the crash cause.
 set +e
-PKG=com.example.chess_game
+PKG=com.shatranj.chess_game
 adb install -r apk/app-release.apk
 adb logcat -c
 adb shell monkey -p $PKG -c android.intent.category.LAUNCHER 1
