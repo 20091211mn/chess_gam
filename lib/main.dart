@@ -1126,7 +1126,7 @@ class Ads {
 
 // Google's test ids. Replace them with your own units from AdMob when you create them.
 const String kInterstitialId = 'ca-app-pub-7019939648590037/7489491598';
-const String kRewardedId = 'ca-app-pub-3940256099942544/5224354917';
+const String kRewardedId = 'ca-app-pub-7019939648590037/7489491598';
 
 class AdsX {
   static InterstitialAd? _inter;
