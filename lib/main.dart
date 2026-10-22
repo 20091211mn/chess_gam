@@ -1125,8 +1125,8 @@ class Ads {
 }
 
 // Google's test ids. Replace them with your own units from AdMob when you create them.
-const String kInterstitialId = 'ca-app-pub-7019939648590037/7489491598';
-const String kRewardedId = 'ca-app-pub-7019939648590037/7489491598';
+const String kInterstitialId = 'ca-app-pub-3940256099942544/1033173712';
+const String kRewardedId = 'ca-app-pub-3940256099942544/5224354917';
 
 class AdsX {
   static InterstitialAd? _inter;
@@ -1509,6 +1509,7 @@ class _PlansPageState extends State<PlansPage> {
       untilTxt = ' (كود هدية حتى ${d.year}/${d.month}/${d.day})';
     }
     return Scaffold(
+      bottomNavigationBar: const SafeArea(child: AdBanner()),
       appBar: AppBar(backgroundColor: kPanel, title: const Text('الاشتراكات')),
       body: ListView(padding: const EdgeInsets.all(16), children: [
         Container(
@@ -1744,6 +1745,7 @@ class _FriendsPageState extends State<FriendsPage> {
     final code = Hub.myCode;
     final limit = kFriendLimit[Prefs.tier];
     return Scaffold(
+      bottomNavigationBar: const SafeArea(child: AdBanner()),
       appBar: AppBar(backgroundColor: kPanel, title: const Text('الأصدقاء')),
       body: ListView(padding: const EdgeInsets.all(16), children: [
         if (!Hub.connected)
@@ -1918,6 +1920,7 @@ class _OnlinePageState extends State<OnlinePage> {
     final tc = kTCs[Prefs.tcIdx];
     final searching = Hub.status == 'waiting' || Hub.status == 'searching';
     return Scaffold(
+      bottomNavigationBar: const SafeArea(child: AdBanner()),
       appBar:
           AppBar(backgroundColor: kPanel, title: const Text('لعب أونلاين')),
       body: ListView(padding: const EdgeInsets.all(20), children: [
@@ -2081,6 +2084,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
+      bottomNavigationBar: const SafeArea(child: AdBanner()),
         appBar: AppBar(
             backgroundColor: kPanel, title: const Text('لوحة الصدارة')),
         body: ListView(padding: const EdgeInsets.all(16), children: [
@@ -4667,6 +4671,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
+      bottomNavigationBar: const SafeArea(child: AdBanner()),
         appBar: AppBar(
             backgroundColor: kPanel, title: const Text('الإحصائيات والإعدادات')),
         body: ListView(padding: const EdgeInsets.all(16), children: [
@@ -5296,6 +5301,7 @@ class _MistakesPageState extends State<MistakesPage> {
   Widget build(BuildContext context) {
     final list = Prefs.mistakes();
     return Scaffold(
+      bottomNavigationBar: const SafeArea(child: AdBanner()),
       appBar: AppBar(
           backgroundColor: kPanel, title: const Text('تعلّم من أخطائك')),
       body: list.isEmpty
@@ -5565,6 +5571,7 @@ class AchievementsPage extends StatelessWidget {
     ];
     final doneCount = items.where((e) => e[2] == true).length;
     return Scaffold(
+      bottomNavigationBar: const SafeArea(child: AdBanner()),
       appBar: AppBar(backgroundColor: kPanel, title: const Text('الإنجازات')),
       body: ListView(padding: const EdgeInsets.all(12), children: [
         Container(
