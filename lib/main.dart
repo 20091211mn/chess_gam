@@ -158,6 +158,10 @@ class Prefs {
   static int serverUntil = 0;
   static String lastError = '';
   static bool safeMode = false;
+  static int bonusHints = 0;
+  static int puzzlesSolved = 0;
+  static int reviewsOpened = 0;
+  static int streak = 0;
 
   static int get tier {
     int t = storeTier;
@@ -191,6 +195,20 @@ class Prefs {
     serverUntil = p.getInt('svuntil') ?? 0;
     lastError = p.getString('lasterr') ?? '';
     safeMode = p.getBool('safe') ?? false;
+    bonusHints = p.getInt('bonus') ?? 0;
+    puzzlesSolved = p.getInt('psolved') ?? 0;
+    reviewsOpened = p.getInt('rvopen') ?? 0;
+    streak = p.getInt('streak') ?? 0;
+    final nowD = DateTime.now();
+    String dstr(DateTime d) => '${d.year}-${d.month}-${d.day}';
+    final lastDay = p.getString('lastday') ?? '';
+    if (lastDay != dstr(nowD)) {
+      streak = (lastDay == dstr(nowD.subtract(const Duration(days: 1))))
+          ? streak + 1
+          : 1;
+      p.setString('lastday', dstr(nowD));
+      p.setInt('streak', streak);
+    }
     gTheme = p.getInt('theme') ?? 0;
     if (gTheme < 0 || gTheme >= kThemes.length) gTheme = 0;
     if (gTheme >= 3 && tier < 1) gTheme = 0;
@@ -214,6 +232,9 @@ class Prefs {
     p.setInt('svuntil', serverUntil);
     p.setString('lasterr', lastError);
     p.setBool('safe', safeMode);
+    p.setInt('bonus', bonusHints);
+    p.setInt('psolved', puzzlesSolved);
+    p.setInt('rvopen', reviewsOpened);
     p.setInt('theme', gTheme);
   }
 
@@ -232,6 +253,50 @@ class Prefs {
   static int oRating(String c) => prefs?.getInt('or_$c') ?? 800;
   static void setORating(String c, int v) {
     prefs?.setInt('or_$c', v);
+  }
+
+  static List<Map<String, dynamic>> mistakes() {
+    final raw = prefs?.getString('mist');
+    if (raw == null) return [];
+    try {
+      return (jsonDecode(raw) as List)
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  static void addMistake(Map<String, dynamic> m) {
+    final l = mistakes();
+    l.removeWhere((x) => x['fen'] == m['fen']);
+    l.insert(0, m);
+    while (l.length > 40) {
+      l.removeLast();
+    }
+    prefs?.setString('mist', jsonEncode(l));
+  }
+
+  static void removeMistake(String fen) {
+    final l = mistakes();
+    l.removeWhere((x) => x['fen'] == fen);
+    prefs?.setString('mist', jsonEncode(l));
+  }
+
+  static List<int> ratingHistory(String kind, String cat) {
+    final raw = prefs?.getString('rh_${kind}_$cat') ?? '';
+    if (raw.isEmpty) return [];
+    return raw.split(',').map((e) => int.tryParse(e) ?? 800).toList();
+  }
+
+  static void addRatingPoint(String kind, String cat, int v) {
+    final l = ratingHistory(kind, cat);
+    if (l.isEmpty) l.add(800);
+    l.add(v);
+    while (l.length > 60) {
+      l.removeAt(0);
+    }
+    prefs?.setString('rh_${kind}_$cat', l.join(','));
   }
 
   static int stat(String k) => prefs?.getInt(k) ?? 0;
@@ -336,6 +401,9 @@ class ChessApp extends StatelessWidget {
         theme: ThemeData.dark(useMaterial3: true)
             .copyWith(scaffoldBackgroundColor: kBg),
         navigatorKey: navKey,
+        builder: (context, child) => Directionality(
+            textDirection: TextDirection.rtl,
+            child: child ?? const SizedBox()),
         home: const MenuPage(),
       );
 }
@@ -999,8 +1067,15 @@ class _MenuPageState extends State<MenuPage> {
                       ? 'فضي • ذهبي • ماسي'
                       : 'خطتك الحالية: ${kTierName[Prefs.tier]} ${kTierBadge[Prefs.tier]}',
                   () => _go(const PlansPage())),
-              bigButton('سجل المباريات', 'مبارياتك السابقة وملفات PGN',
+              bigButton('سجل المباريات', 'راجع مبارياتك بالتحليل وانسخ PGN',
                   () => _go(const HistoryPage()),
+                  alt: true),
+              bigButton('تعلّم من أخطائك',
+                  '${Prefs.mistakes().length} موقف للتدريب',
+                  () => _go(const MistakesPage()),
+                  alt: true),
+              bigButton('الإنجازات', 'سلسلة ${Prefs.streak} يوم',
+                  () => _go(const AchievementsPage()),
                   alt: true),
               bigButton('الإحصائيات والإعدادات', 'سجلك وخيارات اللعبة',
                   () => _go(const SettingsPage()),
@@ -1016,20 +1091,134 @@ class _MenuPageState extends State<MenuPage> {
 const bool kTestAds = false;
 // CI diagnostic: build with --dart-define=ADS_INIT=false to skip ads initialisation
 const bool kAdsInit = bool.fromEnvironment('ADS_INIT', defaultValue: true);
-const String kBannerId = 'ca-app-pub-3940256099942544/6300978111';
+const String kBannerId = 'ca-app-pub-7019939648590037/6914424873';
 const String kTestBannerId = 'ca-app-pub-3940256099942544/6300978111';
 
 class Ads {
   static final ValueNotifier<bool> ready = ValueNotifier(false);
   static bool _started = false;
 
+  static void _consent() {
+    try {
+      final dynamic ci = ConsentInformation.instance;
+      ci.requestConsentInfoUpdate(ConsentRequestParameters(), () async {
+        try {
+          final dynamic ok = await ci.isConsentFormAvailable();
+          if (ok == true) {
+            ConsentForm.loadAndShowConsentFormIfRequired((dynamic e) {});
+          }
+        } catch (_) {}
+      }, (dynamic e) {});
+    } catch (_) {}
+  }
+
   static Future<void> init() async {
     if (_started || !kAdsInit || Prefs.safeMode || !Platform.isAndroid) return;
     _started = true;
     try {
+      _consent();
       await MobileAds.instance.initialize();
       ready.value = true;
+      AdsX.preload();
     } catch (_) {}
+  }
+}
+
+// Google's test ids. Replace them with your own units from AdMob when you create them.
+const String kInterstitialId = 'ca-app-pub-3940256099942544/1033173712';
+const String kRewardedId = 'ca-app-pub-3940256099942544/5224354917';
+
+class AdsX {
+  static InterstitialAd? _inter;
+  static RewardedAd? _rew;
+  static int _games = 0;
+
+  static bool get ok =>
+      Platform.isAndroid && !Prefs.safeMode && kAdsInit && Ads.ready.value;
+
+  static void preload() {
+    if (!ok || Prefs.tier > 0) return;
+    if (_inter == null) {
+      InterstitialAd.load(
+        adUnitId: kInterstitialId,
+        request: const AdRequest(),
+        adLoadCallback: InterstitialAdLoadCallback(
+          onAdLoaded: (ad) {
+            _inter = ad;
+          },
+          onAdFailedToLoad: (e) {
+            _inter = null;
+          },
+        ),
+      );
+    }
+    if (_rew == null) {
+      RewardedAd.load(
+        adUnitId: kRewardedId,
+        request: const AdRequest(),
+        rewardedAdLoadCallback: RewardedAdLoadCallback(
+          onAdLoaded: (ad) {
+            _rew = ad;
+          },
+          onAdFailedToLoad: (e) {
+            _rew = null;
+          },
+        ),
+      );
+    }
+  }
+
+  static void gameFinished() {
+    if (Prefs.tier > 0) return;
+    _games++;
+  }
+
+  // shown between games, at most every 3rd game, free plan only
+  static void maybeShowBetweenGames() {
+    if (!ok || Prefs.tier > 0 || _games < 3) return;
+    final ad = _inter;
+    if (ad == null) {
+      preload();
+      return;
+    }
+    _games = 0;
+    _inter = null;
+    ad.fullScreenContentCallback = FullScreenContentCallback(
+      onAdDismissedFullScreenContent: (a) {
+        a.dispose();
+        preload();
+      },
+      onAdFailedToShowFullScreenContent: (a, e) {
+        a.dispose();
+        preload();
+      },
+    );
+    ad.show();
+  }
+
+  static bool get rewardedReady => _rew != null;
+
+  static void showRewarded(void Function() onReward) {
+    final ad = _rew;
+    if (ad == null) {
+      preload();
+      Hub.toast('لا يوجد إعلان جاهز الآن، حاول بعد قليل');
+      return;
+    }
+    _rew = null;
+    ad.fullScreenContentCallback = FullScreenContentCallback(
+      onAdDismissedFullScreenContent: (a) {
+        a.dispose();
+        preload();
+      },
+      onAdFailedToShowFullScreenContent: (a, e) {
+        a.dispose();
+        preload();
+      },
+    );
+    ad.show(onUserEarnedReward: (a, r) {
+      onReward();
+    });
   }
 }
 
@@ -2002,6 +2191,25 @@ class HistoryPage extends StatelessWidget {
                                     fontSize: 12, color: Colors.white54)),
                           ]),
                     ),
+                    if (g['uci'] is List && (g['uci'] as List).length >= 2)
+                      IconButton(
+                        icon: const Icon(Icons.analytics_outlined, size: 22),
+                        color: kGreen,
+                        onPressed: () {
+                          if (Prefs.tier == 0 && !Prefs.useDaily('review2', 2)) {
+                            Hub.toast('وصلت للحد اليومي (2). الاشتراك يفتح المراجعة بلا حدود');
+                            Navigator.push(
+                                ctx,
+                                MaterialPageRoute(
+                                    builder: (_) => const PlansPage()));
+                            return;
+                          }
+                          Navigator.push(
+                              ctx,
+                              MaterialPageRoute(
+                                  builder: (_) => ReviewPage(rec: g)));
+                        },
+                      ),
                     IconButton(
                       icon: const Icon(Icons.copy, size: 20),
                       onPressed: () async {
@@ -2465,6 +2673,9 @@ class _GamePageState extends State<GamePage> {
   String? hintA, hintB;
   late List<String> fens;
   late bool playerWhite;
+  List<String> ucis = [];
+  String? dragFrom;
+  Offset? dragAt;
   bool _dialogOpen = false;
   String ratingNote = '';
   List<List<String>> moveSq = [];
@@ -2570,11 +2781,11 @@ class _GamePageState extends State<GamePage> {
   void _applyResume(Map m) {
     final og = widget.og!;
     og.apply(m);
-    final ucis = (m['moves'] as List?) ?? [];
+    final uList = (m['moves'] as List?) ?? [];
     final g = ch.Chess();
     final f = <String>[g.fen];
     final sq = <List<String>>[];
-    for (final u in ucis) {
+    for (final u in uList) {
       final us = u.toString();
       if (us.length < 4) continue;
       final from = us.substring(0, 2);
@@ -2590,6 +2801,7 @@ class _GamePageState extends State<GamePage> {
       fens = f;
       moveSq = sq;
       reviews = [];
+      ucis = [for (final u in uList) u.toString()];
       playerWhite = og.color == 'w';
       flipped = !playerWhite;
       lastFrom = sq.isEmpty ? null : sq.last[0];
@@ -2619,7 +2831,17 @@ class _GamePageState extends State<GamePage> {
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
       );
 
-  void _upsell(String msg) {
+  bool _hintAllowed() {
+    if (Prefs.useDaily('hint', 5)) return true;
+    if (Prefs.bonusHints > 0) {
+      Prefs.bonusHints--;
+      Prefs.save();
+      return true;
+    }
+    return false;
+  }
+
+  void _upsell(String msg, {bool rewarded = false}) {
     showDialog(
         context: context,
         builder: (_) => AlertDialog(
@@ -2627,6 +2849,17 @@ class _GamePageState extends State<GamePage> {
               title: const Text('ميزة للمشتركين'),
               content: Text(msg),
               actions: [
+                if (rewarded && Platform.isAndroid && !Prefs.safeMode)
+                  TextButton(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        AdsX.showRewarded(() {
+                          Prefs.bonusHints += 3;
+                          Prefs.save();
+                          Hub.toast('حصلت على 3 تلميحات إضافية');
+                        });
+                      },
+                      child: const Text('شاهد إعلاناً (+3 تلميحات)')),
                 TextButton(
                     onPressed: () => Navigator.pop(context),
                     child: const Text('لاحقاً')),
@@ -2710,6 +2943,7 @@ class _GamePageState extends State<GamePage> {
     if (rated) {
       net.myRating = rating;
       Prefs.setORating(net.cat, rating);
+      Prefs.addRatingPoint('or', net.cat, rating);
     }
     const reasons = {
       'checkmate': 'كش مات',
@@ -2785,6 +3019,7 @@ class _GamePageState extends State<GamePage> {
   void _end(String m, {int? outcome, String? tag, String? note}) {
     if (resultShown || !mounted) return;
     resultShown = true;
+    AdsX.gameFinished();
     if (tag != null) {
       resultTag = tag;
     } else if (m.contains('فاز الأبيض')) {
@@ -2814,6 +3049,7 @@ class _GamePageState extends State<GamePage> {
       final d = (32 * (score - e)).round();
       final nw = max(100, old + d);
       Prefs.setRating(c, nw);
+      Prefs.addRatingPoint('lr', c, nw);
       n = 'تقييمك (${kCatLabel[c]}): $nw (${d >= 0 ? '+' : ''}$d)';
     }
     if (resultTag != '*' && game.history.length >= 2) {
@@ -2825,6 +3061,7 @@ class _GamePageState extends State<GamePage> {
         'r': resultTag,
         'me': (widget.vsAI || online) ? (playerWhite ? 'w' : 'b') : '',
         'pgn': _pgn(),
+        'uci': List<String>.from(ucis),
         'm': widget.vsAI ? 'ai' : (online ? 'on' : 'lo'),
       });
     }
@@ -2907,9 +3144,11 @@ class _GamePageState extends State<GamePage> {
 
   void _reset({bool force = false}) {
     if (online && !force) return;
+    if (resultShown && !online) AdsX.maybeShowBetweenGames();
     epoch++;
     setState(() {
       game = ch.Chess();
+      ucis = [];
       ratingNote = '';
       flipped = !playerWhite;
       selected = null;
@@ -3076,8 +3315,13 @@ class _GamePageState extends State<GamePage> {
     final fenBefore = game.fen;
     final moverWhite = game.turn == ch.Color.WHITE;
     final capture = game.get(to) != null;
+    final mpiece = game.get(from);
     final ok = game.move({'from': from, 'to': to, 'promotion': promo ?? 'q'});
     if (!ok) return;
+    final isPromoMove = mpiece != null &&
+        mpiece.type.toString() == 'p' &&
+        (to[1] == '8' || to[1] == '1');
+    ucis.add('$from$to${isPromoMove ? (promo ?? 'q') : ''}');
     if (!online) {
       if (moverWhite) {
         whiteSecs += widget.inc;
@@ -3136,6 +3380,20 @@ class _GamePageState extends State<GamePage> {
         rev.grade = _gradeOf(rev.loss, r['gap'] as int, r['n'] as int,
             sac: r['sac'] as bool);
       });
+      if (d == 3 &&
+          (rev.grade == 'mistake' || rev.grade == 'blunder') &&
+          rev.white == playerWhite &&
+          (widget.vsAI || online) &&
+          rev.bestFrom != null) {
+        Prefs.addMistake({
+          'fen': fen,
+          'bf': rev.bestFrom,
+          'bt': rev.bestTo,
+          'san': rev.bestSan,
+          'white': rev.white,
+          'd': DateTime.now().millisecondsSinceEpoch,
+        });
+      }
     }
   }
 
@@ -3245,6 +3503,7 @@ class _GamePageState extends State<GamePage> {
     if (reviews.isNotEmpty) reviews.removeLast();
     if (fens.length > 1) fens.removeLast();
     if (moveSq.isNotEmpty) moveSq.removeLast();
+    if (ucis.isNotEmpty) ucis.removeLast();
   }
 
   List<Pc> _pcsFromFen(String fen) {
@@ -3431,8 +3690,8 @@ class _GamePageState extends State<GamePage> {
 
   Future<void> _hint() async {
     if (thinking || game.game_over || resultShown || _aiToMove) return;
-    if (Prefs.tier == 0 && !Prefs.useDaily('hint', 5)) {
-      _upsell('وصلت للحد اليومي للتلميحات (5). الاشتراك يفتح تلميحات غير محدودة.');
+    if (Prefs.tier == 0 && !_hintAllowed()) {
+      _upsell('وصلت للحد اليومي للتلميحات (5). الاشتراك يفتح تلميحات غير محدودة.', rewarded: true);
       return;
     }
     final my = epoch;
@@ -3531,14 +3790,16 @@ class _GamePageState extends State<GamePage> {
             const SizedBox(height: 6),
             LayoutBuilder(builder: (ctx, cons) {
               final bs = cons.maxWidth - 18;
-              return SizedBox(
+              return Directionality(
+                textDirection: TextDirection.ltr,
+                child: SizedBox(
                 height: bs,
                 child: Row(children: [
                   _evalBar(bs),
                   const SizedBox(width: 2),
                   SizedBox(width: bs, height: bs, child: _board()),
                 ]),
-              );
+              ));
             }),
             const SizedBox(height: 6),
             _playerBar(bottomWhite),
@@ -3677,8 +3938,8 @@ class _GamePageState extends State<GamePage> {
               onTap: () {
                 if (!showBest &&
                     Prefs.tier == 0 &&
-                    !Prefs.useDaily('hint', 5)) {
-                  _upsell('وصلت للحد اليومي للتلميحات (5). الاشتراك يفتح تلميحات غير محدودة.');
+                    !_hintAllowed()) {
+                  _upsell('وصلت للحد اليومي للتلميحات (5). الاشتراك يفتح تلميحات غير محدودة.', rewarded: true);
                   return;
                 }
                 setState(() => showBest = !showBest);
@@ -3911,6 +4172,22 @@ class _GamePageState extends State<GamePage> {
         final cell = S / 8;
         final inView = viewIdx != null;
         final shownPcs = inView ? _pcsFromFen(fens[viewIdx!]) : pcs;
+        String? sqAt(Offset o) {
+          if (o.dx < 0 || o.dy < 0 || o.dx >= S || o.dy >= S) return null;
+          final dc = (o.dx / cell).floor().clamp(0, 7).toInt();
+          final dr = (o.dy / cell).floor().clamp(0, 7).toInt();
+          final f = flipped ? 7 - dc : dc;
+          final r = flipped ? 7 - dr : dr;
+          return _sq(r, f);
+        }
+
+        Pc? dragPcTmp;
+        if (dragFrom != null) {
+          for (final p in pcs) {
+            if (p.sq == dragFrom) dragPcTmp = p;
+          }
+        }
+        final dragPc = dragPcTmp;
         Offset pos(String sq) {
           final f = _files.indexOf(sq[0]);
           final r = 8 - int.parse(sq[1]);
@@ -4007,7 +4284,47 @@ class _GamePageState extends State<GamePage> {
             child: _badge(g, bsz),
           );
         }
-        return SizedBox(
+        return GestureDetector(
+          onPanStart: (d) {
+            final sq = sqAt(d.localPosition);
+            if (sq == null) return;
+            _tap(sq);
+            final p = game.get(sq);
+            if (selected == sq &&
+                p != null &&
+                p.color == game.turn &&
+                viewIdx == null) {
+              setState(() {
+                dragFrom = sq;
+                dragAt = d.localPosition;
+              });
+            }
+          },
+          onPanUpdate: (d) {
+            if (dragFrom != null) setState(() => dragAt = d.localPosition);
+          },
+          onPanEnd: (d) {
+            final from = dragFrom;
+            final at = dragAt;
+            setState(() {
+              dragFrom = null;
+              dragAt = null;
+            });
+            if (from == null || at == null) return;
+            final to = sqAt(at);
+            if (to != null && to != from && targets.contains(to)) {
+              _userMove(from, to);
+            }
+          },
+          onPanCancel: () {
+            if (dragFrom != null) {
+              setState(() {
+                dragFrom = null;
+                dragAt = null;
+              });
+            }
+          },
+          child: SizedBox(
           width: S,
           height: S,
           child: ClipRRect(
@@ -4028,8 +4345,11 @@ class _GamePageState extends State<GamePage> {
                       child: IgnorePointer(
                         child: Padding(
                           padding: EdgeInsets.all(cell * 0.03),
-                          child: CustomPaint(
-                              painter: PiecePainter(pc.type, pc.white)),
+                          child: Opacity(
+                            opacity: pc.sq == dragFrom ? 0.25 : 1.0,
+                            child: CustomPaint(
+                                painter: PiecePainter(pc.type, pc.white)),
+                          ),
                         ),
                       ),
                     ),
@@ -4065,12 +4385,21 @@ class _GamePageState extends State<GamePage> {
                         ),
                       ),
                     if (badge != null) badge,
+                    if (dragPc != null && dragAt != null)
+                      Positioned(
+                        left: dragAt!.dx - cell * 0.75,
+                        top: dragAt!.dy - cell * 1.1,
+                        width: cell * 1.5,
+                        height: cell * 1.5,
+                        child: CustomPaint(
+                            painter: PiecePainter(dragPc.type, dragPc.white)),
+                      ),
                   ]),
                 ),
               ),
             ]),
           ),
-        );
+        ));
       });
 
   Widget _navBar() => Container(
@@ -4389,6 +4718,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           _stat('ضد الكمبيوتر', 'ai'),
           _stat('أونلاين', 'on'),
+          const RatingChartCard(),
           Align(
             alignment: Alignment.centerLeft,
             child: TextButton(
@@ -4469,4 +4799,819 @@ class _SettingsPageState extends State<SettingsPage> {
                   })),
         ]),
       );
+}
+
+// ═════════════════════ NEW: review, learn from mistakes, charts, achievements ═════════════════════
+Widget gradeBadge(GI g, double size) => Container(
+      width: size,
+      height: size,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: g.color,
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white, width: size * 0.07),
+      ),
+      child: Text(g.sym,
+          style: TextStyle(
+              fontSize: size * 0.5,
+              fontWeight: FontWeight.w900,
+              color: Colors.white,
+              height: 1)),
+    );
+
+// A board that only shows a position (no animation). Used by review and puzzles.
+class StaticBoard extends StatelessWidget {
+  final String fen;
+  final bool flipped;
+  final Set<String> hl;
+  final Set<String> blue;
+  final String? selected;
+  final Set<String> targets;
+  final void Function(String sq)? onTap;
+  const StaticBoard({
+    super.key,
+    required this.fen,
+    this.flipped = false,
+    this.hl = const <String>{},
+    this.blue = const <String>{},
+    this.selected,
+    this.targets = const <String>{},
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    ch.Chess g;
+    try {
+      g = ch.Chess.fromFEN(fen);
+    } catch (_) {
+      g = ch.Chess();
+    }
+    final th = kThemes[gTheme];
+    return Directionality(
+      textDirection: TextDirection.ltr,
+      child: AspectRatio(
+        aspectRatio: 1,
+        child: LayoutBuilder(builder: (ctx, cons) {
+          final cell = cons.maxWidth / 8;
+          final kids = <Widget>[];
+          for (int dr = 0; dr < 8; dr++) {
+            for (int dc = 0; dc < 8; dc++) {
+              final f = flipped ? 7 - dc : dc;
+              final r = flipped ? 7 - dr : dr;
+              final sq = '${_files[f]}${8 - r}';
+              final dark = (r + f) % 2 == 1;
+              final p = g.get(sq);
+              final fg = dark ? th[0] : th[1];
+              kids.add(Positioned(
+                left: dc * cell,
+                top: dr * cell,
+                width: cell,
+                height: cell,
+                child: GestureDetector(
+                  onTap: onTap == null ? null : () => onTap!(sq),
+                  child: Stack(children: [
+                    Container(color: dark ? th[1] : th[0]),
+                    if (hl.contains(sq) || sq == selected)
+                      Container(color: const Color(0x80F6F669)),
+                    if (blue.contains(sq))
+                      Container(color: const Color(0x884A90E2)),
+                    if (dc == 0)
+                      Positioned(
+                          left: 2,
+                          top: 1,
+                          child: Text('${8 - r}',
+                              style: TextStyle(
+                                  fontSize: cell * 0.2,
+                                  fontWeight: FontWeight.w800,
+                                  color: fg))),
+                    if (dr == 7)
+                      Positioned(
+                          right: 2,
+                          bottom: 0,
+                          child: Text(_files[f],
+                              style: TextStyle(
+                                  fontSize: cell * 0.2,
+                                  fontWeight: FontWeight.w800,
+                                  color: fg))),
+                    if (p != null)
+                      Padding(
+                        padding: EdgeInsets.all(cell * 0.03),
+                        child: CustomPaint(
+                            size: Size.infinite,
+                            painter: PiecePainter(
+                                p.type.toString(), p.color == ch.Color.WHITE)),
+                      ),
+                    if (targets.contains(sq))
+                      Center(
+                        child: Container(
+                          width: cell * 0.3,
+                          height: cell * 0.3,
+                          decoration: const BoxDecoration(
+                              shape: BoxShape.circle, color: Color(0x40000000)),
+                        ),
+                      ),
+                  ]),
+                ),
+              ));
+            }
+          }
+          return ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: Stack(children: kids));
+        }),
+      ),
+    );
+  }
+}
+
+class LinePainter extends CustomPainter {
+  final List<double> ys;
+  final double minY;
+  final double maxY;
+  final int? marker;
+  final Color color;
+  final bool zeroLine;
+  LinePainter(this.ys,
+      {required this.minY,
+      required this.maxY,
+      this.marker,
+      this.color = kGreen,
+      this.zeroLine = false});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRRect(
+        RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(6)),
+        Paint()..color = const Color(0xFF262421));
+    if (ys.length < 2) return;
+    double yOf(double v) {
+      final t = ((v - minY) / (maxY - minY)).clamp(0.0, 1.0).toDouble();
+      return size.height - 6 - t * (size.height - 12);
+    }
+
+    double xOf(int i) => 6 + i * (size.width - 12) / (ys.length - 1);
+    if (zeroLine) {
+      canvas.drawLine(
+          Offset(0, yOf(0)),
+          Offset(size.width, yOf(0)),
+          Paint()
+            ..color = const Color(0x33FFFFFF)
+            ..strokeWidth = 1);
+    }
+    final path = Path()..moveTo(xOf(0), yOf(ys[0]));
+    for (int i = 1; i < ys.length; i++) {
+      path.lineTo(xOf(i), yOf(ys[i]));
+    }
+    canvas.drawPath(
+        path,
+        Paint()
+          ..color = color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.2
+          ..strokeJoin = StrokeJoin.round);
+    final m = marker;
+    if (m != null && m >= 0 && m < ys.length) {
+      canvas.drawCircle(
+          Offset(xOf(m), yOf(ys[m])), 4.5, Paint()..color = Colors.white);
+    }
+  }
+
+  @override
+  bool shouldRepaint(LinePainter old) => true;
+}
+
+// ───────────── game review (analyse a finished game) ─────────────
+class ReviewPage extends StatefulWidget {
+  final Map<String, dynamic> rec;
+  const ReviewPage({super.key, required this.rec});
+  @override
+  State<ReviewPage> createState() => _ReviewPageState();
+}
+
+class _ReviewPageState extends State<ReviewPage> {
+  final List<String> fens = [];
+  final List<List<String>> mv = [];
+  final List<String> promos = [];
+  final List<String> sans = [];
+  final List<Rev?> revs = [];
+  int idx = 0;
+  int done = 0;
+  bool flipped = false;
+  bool showBest = false;
+  bool _disposed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    flipped = (widget.rec['me'] ?? '') == 'b';
+    Prefs.reviewsOpened++;
+    Prefs.save();
+    _replay();
+    _analyzeAll();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  void _replay() {
+    final g = ch.Chess();
+    fens.add(g.fen);
+    final list = (widget.rec['uci'] as List?) ?? [];
+    for (final u in list) {
+      final s = u.toString();
+      if (s.length < 4) break;
+      final from = s.substring(0, 2);
+      final to = s.substring(2, 4);
+      final promo = s.length > 4 ? s.substring(4, 5) : '';
+      final ok = g.move(
+          {'from': from, 'to': to, 'promotion': promo.isEmpty ? 'q' : promo});
+      if (!ok) break;
+      String san = s;
+      try {
+        final l = g.san_moves();
+        if (l.isNotEmpty) san = l.last.toString();
+      } catch (_) {}
+      fens.add(g.fen);
+      mv.add([from, to]);
+      promos.add(promo);
+      sans.add(san);
+      revs.add(null);
+    }
+  }
+
+  Future<void> _analyzeAll() async {
+    for (int i = 0; i < mv.length; i++) {
+      if (_disposed || !mounted) return;
+      final r = await compute(_analyzeTask, {
+        'fen': fens[i],
+        'depth': 2,
+        'from': mv[i][0],
+        'to': mv[i][1],
+        'promo': promos[i].isEmpty ? null : promos[i],
+      });
+      if (_disposed || !mounted) return;
+      if (r != null) {
+        final rev = Rev(sans[i], i % 2 == 0, mv[i][1]);
+        final loss = r['loss'] as int;
+        rev.loss = loss < 0 ? 0 : loss;
+        rev.evalAfter = r['evalAfter'] as int;
+        rev.bestSan = r['bestSan'] as String;
+        rev.bestFrom = r['bestFrom'] as String;
+        rev.bestTo = r['bestTo'] as String;
+        rev.grade = _gradeOf(rev.loss, r['gap'] as int, r['n'] as int,
+            sac: r['sac'] as bool);
+        revs[i] = rev;
+      }
+      setState(() => done = i + 1);
+    }
+  }
+
+  double _acc(bool white) {
+    double sum = 0;
+    int n = 0;
+    for (int i = 0; i < revs.length; i++) {
+      final r = revs[i];
+      if (r == null || r.white != white) continue;
+      sum += 100 * exp(-min(r.loss, 3000) / 300.0);
+      n++;
+    }
+    return n == 0 ? -1 : sum / n;
+  }
+
+  String _accText(bool white) {
+    final a = _acc(white);
+    return a < 0 ? '--' : '${a.toStringAsFixed(0)}%';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final n = mv.length;
+    final Rev? rev = (idx > 0 && idx <= n) ? revs[idx - 1] : null;
+    final hl = <String>{};
+    if (idx > 0 && idx <= n) {
+      hl.add(mv[idx - 1][0]);
+      hl.add(mv[idx - 1][1]);
+    }
+    final blue = <String>{};
+    if (showBest && rev != null && rev.bestFrom != null && rev.bestTo != null) {
+      blue.add(rev.bestFrom!);
+      blue.add(rev.bestTo!);
+    }
+    final ys = <double>[];
+    double last = 0;
+    for (int i = 0; i < n; i++) {
+      final r = revs[i];
+      if (r != null) last = r.evalAfter.toDouble().clamp(-800.0, 800.0).toDouble();
+      ys.add(last);
+    }
+    final g = rev == null ? null : kGrades[rev.grade ?? ''];
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: kPanel,
+        title: const Text('مراجعة المباراة'),
+        actions: [
+          IconButton(
+              icon: const Icon(Icons.swap_vert),
+              onPressed: () => setState(() => flipped = !flipped)),
+        ],
+      ),
+      body: n == 0
+          ? const Center(child: Text('لا توجد نقلات لمراجعتها'))
+          : Column(children: [
+              if (done < n)
+                LinearProgressIndicator(value: done / n, minHeight: 3),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+                child: SizedBox(
+                  height: 64,
+                  width: double.infinity,
+                  child: CustomPaint(
+                      painter: LinePainter(ys,
+                          minY: -800,
+                          maxY: 800,
+                          marker: idx > 0 ? idx - 1 : null,
+                          zeroLine: true)),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: StaticBoard(
+                    fen: fens[idx], flipped: flipped, hl: hl, blue: blue),
+              ),
+              Directionality(
+                textDirection: TextDirection.ltr,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    IconButton(
+                        icon: const Icon(Icons.first_page),
+                        onPressed: idx > 0 ? () => setState(() => idx = 0) : null),
+                    IconButton(
+                        icon: const Icon(Icons.chevron_left),
+                        onPressed: idx > 0 ? () => setState(() => idx--) : null),
+                    IconButton(
+                        icon: const Icon(Icons.chevron_right),
+                        onPressed:
+                            idx < n ? () => setState(() => idx++) : null),
+                    IconButton(
+                        icon: const Icon(Icons.last_page),
+                        onPressed: idx < n ? () => setState(() => idx = n) : null),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(10, 0, 10, 16),
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                          color: kPanel, borderRadius: BorderRadius.circular(8)),
+                      child: idx == 0
+                          ? const Text('اضغط ▶ لتبدأ مراجعة النقلات',
+                              style: TextStyle(color: Colors.white54))
+                          : Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(children: [
+                                  if (g != null)
+                                    gradeBadge(g, 26)
+                                  else
+                                    const SizedBox(
+                                        width: 18,
+                                        height: 18,
+                                        child: CircularProgressIndicator(
+                                            strokeWidth: 2)),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Text(
+                                        g == null
+                                            ? '${sans[idx - 1]} - جاري التحليل...'
+                                            : '${sans[idx - 1]} - ${g.label}',
+                                        style: TextStyle(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.w800,
+                                            color: g?.color ?? Colors.white70)),
+                                  ),
+                                ]),
+                                if (rev != null &&
+                                    (rev.grade == 'inaccuracy' ||
+                                        rev.grade == 'mistake' ||
+                                        rev.grade == 'blunder') &&
+                                    rev.bestSan.isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 8),
+                                    child: GestureDetector(
+                                      onTap: () =>
+                                          setState(() => showBest = !showBest),
+                                      child: Row(children: [
+                                        const Icon(Icons.lightbulb_outline,
+                                            size: 18, color: Colors.white60),
+                                        const SizedBox(width: 6),
+                                        Text('الأفضل كان: ${rev.bestSan}'),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                            showBest
+                                                ? '(إخفاء)'
+                                                : '(إظهار على الرقعة)',
+                                            style: const TextStyle(
+                                                fontSize: 12, color: kGreen)),
+                                      ]),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(children: [
+                      Expanded(
+                          child: _accBox('الأبيض', _accText(true))),
+                      const SizedBox(width: 10),
+                      Expanded(
+                          child: _accBox('الأسود', _accText(false))),
+                    ]),
+                    const SizedBox(height: 12),
+                    Wrap(spacing: 6, runSpacing: 6, children: [
+                      for (int i = 0; i < n; i++)
+                        GestureDetector(
+                          onTap: () => setState(() => idx = i + 1),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 5),
+                            decoration: BoxDecoration(
+                                color: idx == i + 1 ? kGreenDark : kPanel,
+                                borderRadius: BorderRadius.circular(6)),
+                            child: Text(
+                                '${i % 2 == 0 ? '${i ~/ 2 + 1}. ' : ''}${sans[i]}',
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                    color: _chipColor(revs[i]))),
+                          ),
+                        ),
+                    ]),
+                  ],
+                ),
+              ),
+            ]),
+    );
+  }
+
+  Color _chipColor(Rev? r) {
+    final g = r?.grade;
+    if (g == 'inaccuracy' || g == 'mistake' || g == 'blunder') {
+      return kGrades[g!]!.color;
+    }
+    if (g == 'brilliant' || g == 'great') return kGrades[g!]!.color;
+    return Colors.white;
+  }
+
+  Widget _accBox(String who, String acc) => Container(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        decoration: BoxDecoration(
+            color: kPanel, borderRadius: BorderRadius.circular(8)),
+        child: Column(children: [
+          Text(who, style: const TextStyle(fontSize: 12, color: Colors.white60)),
+          Text(acc,
+              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
+          const Text('الدقة',
+              style: TextStyle(fontSize: 11, color: Colors.white38)),
+        ]),
+      );
+}
+
+// ───────────── learn from your mistakes ─────────────
+class MistakesPage extends StatefulWidget {
+  const MistakesPage({super.key});
+  @override
+  State<MistakesPage> createState() => _MistakesPageState();
+}
+
+class _MistakesPageState extends State<MistakesPage> {
+  @override
+  Widget build(BuildContext context) {
+    final list = Prefs.mistakes();
+    return Scaffold(
+      appBar: AppBar(
+          backgroundColor: kPanel, title: const Text('تعلّم من أخطائك')),
+      body: list.isEmpty
+          ? const Center(
+              child: Padding(
+              padding: EdgeInsets.all(24),
+              child: Text(
+                  'لا توجد أخطاء محفوظة بعد.\nالعب مباراة، وأي خطأ كبير ترتكبه سيظهر هنا لتتدرب على النقلة الصحيحة.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white54)),
+            ))
+          : ListView.builder(
+              padding: const EdgeInsets.all(12),
+              itemCount: list.length,
+              itemBuilder: (ctx, i) {
+                final m = list[i];
+                final white = m['white'] == true;
+                final d = DateTime.fromMillisecondsSinceEpoch(
+                    (m['d'] as num?)?.toInt() ?? 0);
+                return GestureDetector(
+                  onTap: () async {
+                    await Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => PuzzlePage(m: m)));
+                    if (mounted) setState(() {});
+                  },
+                  child: Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                        color: kPanel, borderRadius: BorderRadius.circular(8)),
+                    child: Row(children: [
+                      SizedBox(
+                          width: 34,
+                          height: 34,
+                          child: CustomPaint(
+                              painter: PiecePainter('k', white))),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(white ? 'دورك بالأبيض' : 'دورك بالأسود',
+                                  style: const TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w700)),
+                              Text('${d.year}/${d.month}/${d.day}',
+                                  style: const TextStyle(
+                                      fontSize: 12, color: Colors.white54)),
+                            ]),
+                      ),
+                      const Icon(Icons.chevron_right),
+                    ]),
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
+class PuzzlePage extends StatefulWidget {
+  final Map<String, dynamic> m;
+  const PuzzlePage({super.key, required this.m});
+  @override
+  State<PuzzlePage> createState() => _PuzzlePageState();
+}
+
+class _PuzzlePageState extends State<PuzzlePage> {
+  late ch.Chess g;
+  String? sel;
+  Set<String> targets = {};
+  String msg = '';
+  bool solved = false;
+  bool showSol = false;
+
+  String get fen => widget.m['fen'].toString();
+  String get bf => widget.m['bf'].toString();
+  String get bt => widget.m['bt'].toString();
+
+  @override
+  void initState() {
+    super.initState();
+    g = ch.Chess.fromFEN(fen);
+  }
+
+  void _tap(String sq) {
+    if (solved) return;
+    if (sel != null && targets.contains(sq)) {
+      if (sel == bf && sq == bt) {
+        setState(() {
+          solved = true;
+          msg = 'أحسنت! هذه أفضل نقلة: ${widget.m['san'] ?? ''}';
+        });
+        Prefs.puzzlesSolved++;
+        Prefs.removeMistake(fen);
+        Prefs.save();
+      } else {
+        setState(() {
+          msg = 'ليست الأفضل. حاول مرة أخرى';
+          sel = null;
+          targets = {};
+        });
+      }
+      return;
+    }
+    final p = g.get(sq);
+    if (p != null && p.color == g.turn) {
+      final ms = g.moves({'asObjects': true}) as List;
+      setState(() {
+        sel = sq;
+        targets = {
+          for (final x in ms)
+            if (x.fromAlgebraic == sq) x.toAlgebraic as String
+        };
+      });
+    } else {
+      setState(() {
+        sel = null;
+        targets = {};
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final whiteToMove = g.turn == ch.Color.WHITE;
+    return Scaffold(
+      appBar: AppBar(backgroundColor: kPanel, title: const Text('أين النقلة الأفضل؟')),
+      body: ListView(padding: const EdgeInsets.all(12), children: [
+        Text(
+            whiteToMove
+                ? 'دور الأبيض - جد أفضل نقلة'
+                : 'دور الأسود - جد أفضل نقلة',
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+        const SizedBox(height: 10),
+        StaticBoard(
+          fen: fen,
+          flipped: !whiteToMove,
+          selected: sel,
+          targets: targets,
+          blue: (showSol || solved) ? {bf, bt} : <String>{},
+          onTap: _tap,
+        ),
+        const SizedBox(height: 12),
+        if (msg.isNotEmpty)
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+                color: solved ? kGreenDark : kPanel,
+                borderRadius: BorderRadius.circular(8)),
+            child: Text(msg, style: const TextStyle(fontSize: 15)),
+          ),
+        const SizedBox(height: 10),
+        if (!solved)
+          TextButton(
+              onPressed: () => setState(() => showSol = !showSol),
+              child: Text(showSol ? 'إخفاء الحل' : 'أظهر الحل')),
+        if (solved)
+          bigButton('رجوع', 'التمرين التالي', () => Navigator.pop(context)),
+      ]),
+    );
+  }
+}
+
+// ───────────── rating chart (profile) ─────────────
+class RatingChartCard extends StatefulWidget {
+  const RatingChartCard({super.key});
+  @override
+  State<RatingChartCard> createState() => _RatingChartCardState();
+}
+
+class _RatingChartCardState extends State<RatingChartCard> {
+  String cat = 'blitz';
+  bool online = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final hist = Prefs.ratingHistory(online ? 'or' : 'lr', cat);
+    final ys = hist.map((e) => e.toDouble()).toList();
+    double lo = 700, hi = 900;
+    if (ys.isNotEmpty) {
+      lo = ys.reduce(min) - 30;
+      hi = ys.reduce(max) + 30;
+    }
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+          color: kPanel, borderRadius: BorderRadius.circular(10)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('تطور تقييمك',
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800)),
+        const SizedBox(height: 8),
+        Wrap(spacing: 6, children: [
+          for (final c in ['bullet', 'blitz', 'rapid'])
+            ChoiceChip(
+              label: Text(kCatLabel[c]!),
+              selected: cat == c,
+              selectedColor: kGreen,
+              onSelected: (_) => setState(() => cat = c),
+            ),
+          ChoiceChip(
+            label: Text(online ? 'أونلاين' : 'ضد الكمبيوتر'),
+            selected: true,
+            selectedColor: kGreenDark,
+            onSelected: (_) => setState(() => online = !online),
+          ),
+        ]),
+        const SizedBox(height: 10),
+        if (ys.length < 2)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 18),
+            child: Center(
+                child: Text('العب مباراتين على الأقل ليظهر الرسم',
+                    style: TextStyle(color: Colors.white54, fontSize: 13))),
+          )
+        else ...[
+          SizedBox(
+            height: 110,
+            width: double.infinity,
+            child: CustomPaint(
+                painter: LinePainter(ys,
+                    minY: lo, maxY: hi, marker: ys.length - 1, color: kGreen)),
+          ),
+          const SizedBox(height: 6),
+          Text('الآن: ${hist.last}   •   الأعلى: ${hist.reduce(max)}',
+              style: const TextStyle(fontSize: 12, color: Colors.white54)),
+        ],
+      ]),
+    );
+  }
+}
+
+// ───────────── achievements ─────────────
+class AchievementsPage extends StatelessWidget {
+  const AchievementsPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    int wins = Prefs.stat('ai_w') + Prefs.stat('on_w');
+    int games = wins +
+        Prefs.stat('ai_l') +
+        Prefs.stat('on_l') +
+        Prefs.stat('ai_d') +
+        Prefs.stat('on_d');
+    int onlineGames =
+        Prefs.stat('on_w') + Prefs.stat('on_l') + Prefs.stat('on_d');
+    int bestRating = 0;
+    for (final c in ['bullet', 'blitz', 'rapid']) {
+      bestRating = max(bestRating, max(Prefs.rating(c), Prefs.oRating(c)));
+    }
+    final items = <List<dynamic>>[
+      ['أول مباراة', 'أكمل مباراة واحدة', games >= 1, '$games/1'],
+      ['أول فوز', 'اربح مباراة', wins >= 1, '$wins/1'],
+      ['10 انتصارات', 'اربح 10 مباريات', wins >= 10, '$wins/10'],
+      ['50 انتصاراً', 'اربح 50 مباراة', wins >= 50, '$wins/50'],
+      ['لاعب أونلاين', 'العب مباراة ضد لاعب حقيقي', onlineGames >= 1, '$onlineGames/1'],
+      ['تقييم 1000', 'اوصل لتقييم 1000', bestRating >= 1000, '$bestRating/1000'],
+      ['تقييم 1200', 'اوصل لتقييم 1200', bestRating >= 1200, '$bestRating/1200'],
+      ['مراجع محترف', 'راجع مباراة بالتحليل', Prefs.reviewsOpened >= 1, '${Prefs.reviewsOpened}/1'],
+      ['طالب مجتهد', 'حل 5 تمارين من أخطائك', Prefs.puzzlesSolved >= 5, '${Prefs.puzzlesSolved}/5'],
+      ['صديق', 'أضف صديقاً', Hub.friends.isNotEmpty, '${Hub.friends.length}/1'],
+      ['مواظب', 'افتح اللعبة 3 أيام متتالية', Prefs.streak >= 3, '${Prefs.streak}/3'],
+      ['أسبوع كامل', 'افتح اللعبة 7 أيام متتالية', Prefs.streak >= 7, '${Prefs.streak}/7'],
+    ];
+    final doneCount = items.where((e) => e[2] == true).length;
+    return Scaffold(
+      appBar: AppBar(backgroundColor: kPanel, title: const Text('الإنجازات')),
+      body: ListView(padding: const EdgeInsets.all(12), children: [
+        Container(
+          padding: const EdgeInsets.all(14),
+          margin: const EdgeInsets.only(bottom: 12),
+          decoration: BoxDecoration(
+              color: kPanel, borderRadius: BorderRadius.circular(10)),
+          child: Row(children: [
+            const Icon(Icons.local_fire_department, color: Colors.orange),
+            const SizedBox(width: 8),
+            Expanded(
+                child: Text('سلسلة الأيام: ${Prefs.streak}',
+                    style: const TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w700))),
+            Text('$doneCount/${items.length}',
+                style: const TextStyle(fontSize: 16, color: Colors.white70)),
+          ]),
+        ),
+        for (final it in items)
+          Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+                color: kPanel, borderRadius: BorderRadius.circular(8)),
+            child: Row(children: [
+              Icon(it[2] == true ? Icons.emoji_events : Icons.lock_outline,
+                  color: it[2] == true ? Colors.amber : Colors.white38),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(it[0].toString(),
+                          style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                              color: it[2] == true ? Colors.white : Colors.white60)),
+                      Text(it[1].toString(),
+                          style: const TextStyle(
+                              fontSize: 12, color: Colors.white38)),
+                    ]),
+              ),
+              Text(it[3].toString(),
+                  style: const TextStyle(fontSize: 12, color: Colors.white54)),
+            ]),
+          ),
+      ]),
+    );
+  }
 }

@@ -49,3 +49,65 @@ class AdWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) => const SizedBox.shrink();
 }
+
+class AdError {}
+
+class FullScreenContentCallback<T> {
+  final void Function(T ad)? onAdDismissedFullScreenContent;
+  final void Function(T ad, AdError error)? onAdFailedToShowFullScreenContent;
+  const FullScreenContentCallback({
+    this.onAdDismissedFullScreenContent,
+    this.onAdFailedToShowFullScreenContent,
+  });
+}
+
+class InterstitialAdLoadCallback {
+  final void Function(InterstitialAd ad) onAdLoaded;
+  final void Function(LoadAdError error) onAdFailedToLoad;
+  const InterstitialAdLoadCallback(
+      {required this.onAdLoaded, required this.onAdFailedToLoad});
+}
+
+class InterstitialAd extends Ad {
+  FullScreenContentCallback<InterstitialAd>? fullScreenContentCallback;
+  static void load({
+    required String adUnitId,
+    required AdRequest request,
+    required InterstitialAdLoadCallback adLoadCallback,
+  }) {}
+  void show() {}
+}
+
+class RewardItem {}
+
+class RewardedAdLoadCallback {
+  final void Function(RewardedAd ad) onAdLoaded;
+  final void Function(LoadAdError error) onAdFailedToLoad;
+  const RewardedAdLoadCallback(
+      {required this.onAdLoaded, required this.onAdFailedToLoad});
+}
+
+class RewardedAd extends Ad {
+  FullScreenContentCallback<RewardedAd>? fullScreenContentCallback;
+  static void load({
+    required String adUnitId,
+    required AdRequest request,
+    required RewardedAdLoadCallback rewardedAdLoadCallback,
+  }) {}
+  void show({required void Function(Ad ad, RewardItem reward) onUserEarnedReward}) {}
+}
+
+class FormError {}
+
+class ConsentRequestParameters {}
+
+class ConsentInformation {
+  static final ConsentInformation instance = ConsentInformation._();
+  ConsentInformation._();
+  void requestConsentInfoUpdate(dynamic p, dynamic ok, dynamic fail) {}
+  Future<bool> isConsentFormAvailable() async => false;
+}
+
+class ConsentForm {
+  static void loadAndShowConsentFormIfRequired(dynamic cb) {}
+}
