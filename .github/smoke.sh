@@ -5,7 +5,7 @@ PKG=com.shatranj.chess_game
 adb install -r apk/app-release.apk
 adb logcat -c
 adb shell monkey -p $PKG -c android.intent.category.LAUNCHER 1
-sleep 25
+sleep 35
 adb exec-out screencap -p > screen.png
 
 PID=$(adb shell pidof $PKG | tr -d '\r')
@@ -21,6 +21,13 @@ adb logcat -d -s AndroidRuntime:E | head -70
 
 echo "=============== ROOT CAUSE LINES ==============="
 adb logcat -d -s AndroidRuntime:E | grep -E "Caused by|IllegalState|RuntimeException|NoClassDef|NoSuchMethod|ClassNotFound|UnsatisfiedLink|Exception:" | head -8
+
+echo "=============== ADS STATUS (printed by the app) ==============="
+adb logcat -d | grep "ADS_DIAG" | tail -8
+ADSLINE=$(adb logcat -d | grep "ADS_DIAG" | tail -1 | sed 's/^.*ADS_DIAG //' | cut -c1-400)
+echo "::notice title=ADS $VARIANT::${ADSLINE:-no ads log (ads are not active in this variant)}"
+echo "=============== ADS SDK LOG ==============="
+adb logcat -d | grep -E " Ads|GoogleMobileAds|MobileAds" | tail -15
 
 echo "=============== NATIVE CRASH ==============="
 adb logcat -d | grep -E -B2 -A 25 "Fatal signal|SIGSEGV|SIGABRT|Abort message" | head -50

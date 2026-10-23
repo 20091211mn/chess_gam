@@ -1112,6 +1112,39 @@ const bool kAdsInit = bool.fromEnvironment('ADS_INIT', defaultValue: true);
 const String kBannerId = 'ca-app-pub-7019939648590037/6914424873';
 const String kTestBannerId = 'ca-app-pub-3940256099942544/6300978111';
 
+class AdsDiag {
+  static String init = 'لم تبدأ بعد';
+  static String banner = 'لا يوجد طلب بعد';
+  static String interstitial = '-';
+  static String rewarded = '-';
+
+  static void _p() {
+    // visible in logcat (used by the CI emulator test)
+    print(
+        'ADS_DIAG init=$init | banner=$banner | rewarded=$rewarded | interstitial=$interstitial');
+  }
+
+  static void setInit(String v) {
+    init = v;
+    _p();
+  }
+
+  static void setBanner(String v) {
+    banner = v;
+    _p();
+  }
+
+  static void setInter(String v) {
+    interstitial = v;
+    _p();
+  }
+
+  static void setRewarded(String v) {
+    rewarded = v;
+    _p();
+  }
+}
+
 class Ads {
   static final ValueNotifier<bool> ready = ValueNotifier(false);
   static bool _started = false;
@@ -1131,14 +1164,21 @@ class Ads {
   }
 
   static Future<void> init() async {
-    if (_started || !kAdsInit || Prefs.safeMode || !Platform.isAndroid) return;
+    if (_started || !kAdsInit || Prefs.safeMode || !Platform.isAndroid) {
+      if (!_started) AdsDiag.setInit('معطلة');
+      return;
+    }
     _started = true;
+    AdsDiag.setInit('جاري التهيئة');
     try {
       _consent();
       await MobileAds.instance.initialize();
       ready.value = true;
+      AdsDiag.setInit('جاهزة ✓');
       AdsX.preload();
-    } catch (_) {}
+    } catch (e) {
+      AdsDiag.setInit('فشل: $e');
+    }
   }
 }
 
@@ -1161,29 +1201,35 @@ class AdsX {
   static void preload() {
     if (!ok || Prefs.tier > 0) return;
     if (_inter == null) {
+      AdsDiag.setInter('جاري الطلب');
       InterstitialAd.load(
         adUnitId: kInterstitialId,
         request: const AdRequest(),
         adLoadCallback: InterstitialAdLoadCallback(
           onAdLoaded: (ad) {
             _inter = ad;
+            AdsDiag.setInter('جاهز ✓');
           },
           onAdFailedToLoad: (e) {
             _inter = null;
+            AdsDiag.setInter('فشل: $e');
           },
         ),
       );
     }
     if (_rew == null) {
+      AdsDiag.setRewarded('جاري الطلب');
       RewardedAd.load(
         adUnitId: kRewardedId,
         request: const AdRequest(),
         rewardedAdLoadCallback: RewardedAdLoadCallback(
           onAdLoaded: (ad) {
             _rew = ad;
+            AdsDiag.setRewarded('جاهز ✓');
           },
           onAdFailedToLoad: (e) {
             _rew = null;
+            AdsDiag.setRewarded('فشل: $e');
           },
         ),
       );
@@ -1267,12 +1313,14 @@ class _AdBannerState extends State<AdBanner> {
 
   void _load() {
     if (!Platform.isAndroid || Prefs.tier > 0 || Prefs.safeMode) return;
+    AdsDiag.setBanner('جاري الطلب');
     final ad = BannerAd(
       adUnitId: kTestAds ? kTestBannerId : kBannerId,
       size: AdSize.banner,
       request: const AdRequest(),
       listener: BannerAdListener(
         onAdLoaded: (a) {
+          AdsDiag.setBanner('تم التحميل ✓');
           if (mounted) {
             setState(() => _loaded = true);
           } else {
@@ -1281,11 +1329,25 @@ class _AdBannerState extends State<AdBanner> {
         },
         onAdFailedToLoad: (a, e) {
           a.dispose();
+          AdsDiag.setBanner('فشل: $e');
+          _retry();
         },
       ),
     );
     _ad = ad;
     ad.load();
+  }
+
+  int _tries = 0;
+
+  void _retry() {
+    if (_tries >= 5) return;
+    _tries++;
+    Future.delayed(const Duration(seconds: 30), () {
+      if (!mounted || _loaded) return;
+      _ad = null;
+      _load();
+    });
   }
 
   @override
@@ -1301,10 +1363,19 @@ class _AdBannerState extends State<AdBanner> {
     if (Prefs.tier > 0 || !_loaded || ad == null) {
       return const SizedBox.shrink();
     }
-    return SizedBox(
-        width: ad.size.width.toDouble(),
-        height: ad.size.height.toDouble(),
-        child: AdWidget(ad: ad));
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      alignment: Alignment.center,
+      decoration: const BoxDecoration(
+        color: kPanel,
+        border: Border(top: BorderSide(color: Color(0x22FFFFFF))),
+      ),
+      child: SizedBox(
+          width: ad.size.width.toDouble(),
+          height: ad.size.height.toDouble(),
+          child: AdWidget(ad: ad)),
+    );
   }
 }
 
@@ -4834,6 +4905,7 @@ class _SettingsPageState extends State<SettingsPage> {
           _stat('ضد الكمبيوتر', 'ai'),
           _stat('أونلاين', 'on'),
           const RatingChartCard(),
+          const AdsStatusCard(),
           Align(
             alignment: Alignment.centerLeft,
             child: TextButton(
@@ -5728,6 +5800,92 @@ class AchievementsPage extends StatelessWidget {
                   style: const TextStyle(fontSize: 12, color: Colors.white54)),
             ]),
           ),
+      ]),
+    );
+  }
+}
+
+// ───────────── ads status (to check that ads are connected) ─────────────
+class AdsStatusCard extends StatefulWidget {
+  const AdsStatusCard({super.key});
+  @override
+  State<AdsStatusCard> createState() => _AdsStatusCardState();
+}
+
+class _AdsStatusCardState extends State<AdsStatusCard> {
+  Timer? _t;
+
+  @override
+  void initState() {
+    super.initState();
+    _t = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _t?.cancel();
+    super.dispose();
+  }
+
+  Widget _row(String k, String v) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          SizedBox(
+              width: 80,
+              child: Text(k,
+                  style: const TextStyle(fontSize: 12, color: Colors.white54))),
+          Expanded(
+            child: Text(v,
+                style: TextStyle(
+                    fontSize: 12,
+                    color: v.contains('✓')
+                        ? kGreen
+                        : (v.contains('فشل') ? Colors.redAccent : Colors.white70))),
+          ),
+        ]),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    if (!Platform.isAndroid) return const SizedBox.shrink();
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+          color: kPanel, borderRadius: BorderRadius.circular(10)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('حالة الإعلانات',
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800)),
+        const SizedBox(height: 6),
+        if (Prefs.safeMode)
+          const Text('الوضع الآمن: الإعلانات معطلة',
+              style: TextStyle(fontSize: 12, color: Colors.orangeAccent))
+        else if (Prefs.tier > 0)
+          const Text('لا تظهر الإعلانات لأن لديك اشتراكاً أو تجربة فعّالة',
+              style: TextStyle(fontSize: 12, color: Colors.white54)),
+        _row('التهيئة', AdsDiag.init),
+        _row('البانر', AdsDiag.banner),
+        _row('المكافأة', AdsDiag.rewarded),
+        _row('البيني', AdsDiag.interstitial),
+        const SizedBox(height: 6),
+        const Text(
+            'رموز الفشل: 3 = لا يوجد إعلان متاح الآن، 2 = مشكلة شبكة، 1 = معرّف الوحدة خاطئ، 0 = خطأ داخلي',
+            style: TextStyle(fontSize: 11, color: Colors.white38)),
+        const SizedBox(height: 8),
+        Wrap(spacing: 8, children: [
+          ActionChip(
+              label: const Text('إعادة التحميل'),
+              onPressed: () {
+                AdsX.preload();
+                setState(() {});
+              }),
+          ActionChip(
+              label: const Text('جرّب إعلان المكافأة'),
+              onPressed: () => AdsX.showRewarded(
+                  () => Hub.toast('✓ تم منح المكافأة بنجاح'))),
+        ]),
       ]),
     );
   }
