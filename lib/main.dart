@@ -162,6 +162,9 @@ class Prefs {
   static int puzzlesSolved = 0;
   static int reviewsOpened = 0;
   static int streak = 0;
+  static int trialUntil = 0;
+  static int trialAds = 0;
+  static int trialCool = 0;
 
   static int get tier {
     int t = storeTier;
@@ -169,7 +172,16 @@ class Prefs {
         serverTier > t) {
       t = serverTier;
     }
+    if (t < 1 && trialUntil > DateTime.now().millisecondsSinceEpoch) t = 1;
     return t.clamp(0, 3).toInt();
+  }
+
+  static bool get trialActive =>
+      trialUntil > DateTime.now().millisecondsSinceEpoch;
+
+  static bool get hasPaidPlan {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    return storeTier > 0 || (serverUntil > now && serverTier > 0);
   }
 
   static Future<void> load() async {
@@ -199,6 +211,9 @@ class Prefs {
     puzzlesSolved = p.getInt('psolved') ?? 0;
     reviewsOpened = p.getInt('rvopen') ?? 0;
     streak = p.getInt('streak') ?? 0;
+    trialUntil = p.getInt('trialuntil') ?? 0;
+    trialAds = p.getInt('trialads') ?? 0;
+    trialCool = p.getInt('trialcool') ?? 0;
     final nowD = DateTime.now();
     String dstr(DateTime d) => '${d.year}-${d.month}-${d.day}';
     final lastDay = p.getString('lastday') ?? '';
@@ -235,6 +250,9 @@ class Prefs {
     p.setInt('bonus', bonusHints);
     p.setInt('psolved', puzzlesSolved);
     p.setInt('rvopen', reviewsOpened);
+    p.setInt('trialuntil', trialUntil);
+    p.setInt('trialads', trialAds);
+    p.setInt('trialcool', trialCool);
     p.setInt('theme', gTheme);
   }
 
@@ -1126,7 +1144,11 @@ class Ads {
 
 // Google's test ids. Replace them with your own units from AdMob when you create them.
 const String kInterstitialId = 'ca-app-pub-3940256099942544/1033173712';
-const String kRewardedId = 'ca-app-pub-3940256099942544/5224354917';
+const String kRewardedId = 'ca-app-pub-7019939648590037/7020294711';
+
+// free trial: watch kTrialAds rewarded ads -> kTrialDays days of the Silver plan
+const int kTrialAds = 3;
+const int kTrialDays = 3;
 
 class AdsX {
   static InterstitialAd? _inter;
@@ -1419,6 +1441,7 @@ class PlansPage extends StatefulWidget {
 
 class _PlansPageState extends State<PlansPage> {
   final codeCtl = TextEditingController();
+  Timer? _poll;
 
   void _r() {
     if (mounted) setState(() {});
@@ -1432,14 +1455,100 @@ class _PlansPageState extends State<PlansPage> {
     Store.tick.addListener(_r);
     Hub.tick.addListener(_r);
     Hub.ensure();
+    AdsX.preload();
+    _poll = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (mounted) setState(() {});
+    });
   }
 
   @override
   void dispose() {
+    _poll?.cancel();
     Store.tick.removeListener(_r);
     Hub.tick.removeListener(_r);
     codeCtl.dispose();
     super.dispose();
+  }
+
+  void _onTrialAd() {
+    Prefs.trialAds++;
+    if (Prefs.trialAds >= kTrialAds) {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      Prefs.trialAds = 0;
+      Prefs.trialUntil = now + kTrialDays * 86400000;
+      Prefs.trialCool = Prefs.trialUntil + 7 * 86400000;
+      Hub.toast('تم تفعيل الخطة الفضية لمدة $kTrialDays أيام!');
+    }
+    Prefs.save();
+    if (mounted) setState(() {});
+  }
+
+  Widget _trialCard() {
+    if (Prefs.hasPaidPlan || !Platform.isAndroid || Prefs.safeMode) {
+      return const SizedBox.shrink();
+    }
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final active = Prefs.trialUntil > now;
+    final cool = !active && Prefs.trialCool > now;
+    String sub;
+    if (active) {
+      final h = ((Prefs.trialUntil - now) / 3600000).ceil();
+      sub = 'التجربة فعّالة الآن: تنتهي بعد $h ساعة';
+    } else if (cool) {
+      final d = ((Prefs.trialCool - now) / 86400000).ceil();
+      sub = 'يمكنك تجربة مجانية أخرى بعد $d يوم';
+    } else {
+      sub =
+          'شاهد $kTrialAds إعلانات لتحصل على $kTrialDays أيام من الخطة الفضية مجاناً';
+    }
+    final canWatch = !active && !cool;
+    final ready = AdsX.rewardedReady;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+          color: const Color(0xFF2F3B2A),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: kGreen, width: 2)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.card_giftcard, color: kGreen),
+          const SizedBox(width: 8),
+          Text('جرّب الفضي $kTrialDays أيام مجاناً',
+              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
+        ]),
+        const SizedBox(height: 8),
+        Text(sub, style: const TextStyle(fontSize: 13, color: Colors.white70)),
+        if (canWatch) ...[
+          const SizedBox(height: 10),
+          LinearProgressIndicator(
+              value: Prefs.trialAds / kTrialAds, minHeight: 6),
+          const SizedBox(height: 4),
+          Text('${Prefs.trialAds}/$kTrialAds إعلانات',
+              style: const TextStyle(fontSize: 12, color: Colors.white54)),
+          const SizedBox(height: 10),
+          GestureDetector(
+            onTap: ready
+                ? () => AdsX.showRewarded(_onTrialAd)
+                : () {
+                    AdsX.preload();
+                    Hub.toast('جاري تجهيز الإعلان... حاول بعد لحظات');
+                  },
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                  color: ready ? kGreen : const Color(0xFF454240),
+                  borderRadius: BorderRadius.circular(8)),
+              child: Text(ready ? 'شاهد إعلاناً' : 'جاري تجهيز الإعلان...',
+                  style: const TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.w800)),
+            ),
+          ),
+        ],
+      ]),
+    );
   }
 
   Widget _card(int t) {
@@ -1526,6 +1635,7 @@ class _PlansPageState extends State<PlansPage> {
             'المجاني: مع إعلانات بانر، 5 تلميحات يومياً، ملخص مراجعة واحد يومياً، 3 ألوان رقعة، حتى 10 أصدقاء.',
             style: TextStyle(fontSize: 12, color: Colors.white54)),
         const SizedBox(height: 12),
+        _trialCard(),
         _card(1),
         _card(2),
         _card(3),
