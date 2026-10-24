@@ -1106,7 +1106,7 @@ class _MenuPageState extends State<MenuPage> {
 
 // ───────────── ads (free plan only) ─────────────
 // set to true while testing to show Google's test ads
-const bool kTestAds = true;
+const bool kTestAds = false;
 // CI diagnostic: build with --dart-define=ADS_INIT=false to skip ads initialisation
 const bool kAdsInit = bool.fromEnvironment('ADS_INIT', defaultValue: true);
 const String kBannerId = 'ca-app-pub-7019939648590037/6914424873';
