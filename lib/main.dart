@@ -4907,6 +4907,14 @@ class _SettingsPageState extends State<SettingsPage> {
           _stat('أونلاين', 'on'),
           const RatingChartCard(),
           const AdsStatusCard(),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.privacy_tip_outlined),
+            title: const Text('سياسة الخصوصية'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const PrivacyPage())),
+          ),
           Align(
             alignment: Alignment.centerLeft,
             child: TextButton(
@@ -5888,6 +5896,66 @@ class _AdsStatusCardState extends State<AdsStatusCard> {
               onPressed: () => AdsX.showRewarded(
                   () => Hub.toast('✓ تم منح المكافأة بنجاح'))),
         ]),
+      ]),
+    );
+  }
+}
+
+// ───────────── privacy policy (also required by Google Play and AdMob) ─────────────
+class PrivacyPage extends StatelessWidget {
+  const PrivacyPage({super.key});
+  static const String url = 'https://20091211mn.github.io/privacy.html';
+
+  @override
+  Widget build(BuildContext context) {
+    const sections = <List<String>>[
+      [
+        'ما البيانات التي نجمعها؟',
+        'الاسم الذي تختاره داخل اللعبة، ومعرّف مجهول يُنشأ تلقائياً (Firebase) بدون بريد أو رقم هاتف. بيانات اللعب الأونلاين: المباريات والنتائج والتقييم والأصدقاء. وإعدادات التطبيق المحفوظة على جهازك.'
+      ],
+      [
+        'الإعلانات',
+        'تعرض اللعبة إعلانات Google AdMob للمستخدمين المجانيين. قد تستخدم Google معرّف الإعلانات لعرض إعلانات مناسبة وقياس الأداء، ويمكنك إعادة ضبطه أو إيقاف التخصيص من إعدادات جهازك. نعرض نموذج موافقة حيث يلزم.'
+      ],
+      [
+        'المشتريات',
+        'الاشتراكات تتم عبر Google Play. لا نرى بيانات بطاقتك.'
+      ],
+      [
+        'مشاركة البيانات',
+        'لا نبيع بياناتك. تُعالَج عبر خدمات Google (Firebase وAdMob وGoogle Play) وفق سياساتها.'
+      ],
+      [
+        'الأطفال',
+        'اللعبة غير موجّهة للأطفال دون 13 عاماً.'
+      ],
+      [
+        'حذف بياناتك',
+        'راسلنا باسمك في اللعبة وكود الصداقة لحذف بيانات حسابك.'
+      ],
+    ];
+    return Scaffold(
+      appBar: AppBar(backgroundColor: kPanel, title: const Text('سياسة الخصوصية')),
+      body: ListView(padding: const EdgeInsets.all(16), children: [
+        for (final sec in sections) ...[
+          Text(sec[0],
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 6),
+          Text(sec[1],
+              style: const TextStyle(fontSize: 14, height: 1.7, color: Colors.white70)),
+          const SizedBox(height: 16),
+        ],
+        const Text('النص الكامل على الإنترنت:',
+            style: TextStyle(fontSize: 12, color: Colors.white54)),
+        const SizedBox(height: 4),
+        SelectableText(url, style: const TextStyle(fontSize: 13, color: kGreen)),
+        const SizedBox(height: 8),
+        OutlinedButton(
+            onPressed: () async {
+              await Clipboard.setData(const ClipboardData(text: url));
+              Hub.toast('تم نسخ الرابط');
+            },
+            child: const Text('نسخ الرابط')),
       ]),
     );
   }
