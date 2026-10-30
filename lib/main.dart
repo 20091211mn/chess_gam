@@ -1186,6 +1186,9 @@ class Ads {
 const String kInterstitialId = 'ca-app-pub-3940256099942544/1033173712';
 const String kRewardedId = 'ca-app-pub-7019939648590037/9320106686';
 const String kTestRewardedId = 'ca-app-pub-3940256099942544/5224354917';
+// true = the rewarded button shows Google's TEST rewarded ad (works before AdMob approves the account).
+// Set it to false before you release the app to real users.
+const bool kTestRewarded = true;
 
 // free trial: watch kTrialAds rewarded ads -> kTrialDays days of the Silver plan
 const int kTrialAds = 3;
@@ -1221,7 +1224,7 @@ class AdsX {
     if (_rew == null) {
       AdsDiag.setRewarded('جاري الطلب');
       RewardedAd.load(
-        adUnitId: kTestAds ? kTestRewardedId : kRewardedId,
+        adUnitId: (kTestAds || kTestRewarded) ? kTestRewardedId : kRewardedId,
         request: const AdRequest(),
         rewardedAdLoadCallback: RewardedAdLoadCallback(
           onAdLoaded: (ad) {
@@ -5891,6 +5894,7 @@ class _AdsStatusCardState extends State<AdsStatusCard> {
           const Text('لا تظهر الإعلانات لأن لديك اشتراكاً أو تجربة فعّالة',
               style: TextStyle(fontSize: 12, color: Colors.white54)),
         _row('الوضع', kTestAds ? 'إعلانات تجريبية ✓' : 'إعلانات حقيقية'),
+        _row('وضع المكافأة', (kTestAds || kTestRewarded) ? 'تجريبية ✓' : 'حقيقية'),
         _row('التهيئة', AdsDiag.init),
         _row('البانر', AdsDiag.banner),
         _row('المكافأة', AdsDiag.rewarded),
