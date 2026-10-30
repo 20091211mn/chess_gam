@@ -1184,7 +1184,7 @@ class Ads {
 
 // Google's test ids. Replace them with your own units from AdMob when you create them.
 const String kInterstitialId = 'ca-app-pub-3940256099942544/1033173712';
-const String kRewardedId = 'ca-app-pub-7019939648590037/7020294711';
+const String kRewardedId = 'ca-app-pub-7019939648590037/9320106686';
 const String kTestRewardedId = 'ca-app-pub-3940256099942544/5224354917';
 
 // free trial: watch kTrialAds rewarded ads -> kTrialDays days of the Silver plan
@@ -1514,6 +1514,7 @@ class PlansPage extends StatefulWidget {
 class _PlansPageState extends State<PlansPage> {
   final codeCtl = TextEditingController();
   Timer? _poll;
+  int _pollN = 0;
 
   void _r() {
     if (mounted) setState(() {});
@@ -1529,6 +1530,8 @@ class _PlansPageState extends State<PlansPage> {
     Hub.ensure();
     AdsX.preload();
     _poll = Timer.periodic(const Duration(seconds: 2), (_) {
+      _pollN++;
+      if (_pollN % 15 == 0 && !AdsX.rewardedReady) AdsX.preload();
       if (mounted) setState(() {});
     });
   }
@@ -1575,6 +1578,7 @@ class _PlansPageState extends State<PlansPage> {
     }
     final canWatch = !active && !cool;
     final ready = AdsX.rewardedReady;
+    final failed = AdsDiag.rewarded.contains('فشل');
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       padding: const EdgeInsets.all(14),
@@ -1598,13 +1602,22 @@ class _PlansPageState extends State<PlansPage> {
           const SizedBox(height: 4),
           Text('${Prefs.trialAds}/$kTrialAds إعلانات',
               style: const TextStyle(fontSize: 12, color: Colors.white54)),
+          if (failed && !ready)
+            const Padding(
+              padding: EdgeInsets.only(top: 8),
+              child: Text(
+                  'الإعلانات غير متاحة الآن (تُفعَّل بعد موافقة AdMob على حسابك). سنعيد المحاولة تلقائياً.',
+                  style: TextStyle(fontSize: 12, color: Colors.orangeAccent)),
+            ),
           const SizedBox(height: 10),
           GestureDetector(
             onTap: ready
                 ? () => AdsX.showRewarded(_onTrialAd)
                 : () {
                     AdsX.preload();
-                    Hub.toast('جاري تجهيز الإعلان... حاول بعد لحظات');
+                    Hub.toast(failed
+                        ? 'الإعلانات غير متاحة الآن، حاول لاحقاً'
+                        : 'جاري تجهيز الإعلان... حاول بعد لحظات');
                   },
             child: Container(
               width: double.infinity,
@@ -1613,7 +1626,10 @@ class _PlansPageState extends State<PlansPage> {
               decoration: BoxDecoration(
                   color: ready ? kGreen : const Color(0xFF454240),
                   borderRadius: BorderRadius.circular(8)),
-              child: Text(ready ? 'شاهد إعلاناً' : 'جاري تجهيز الإعلان...',
+              child: Text(
+                  ready
+                      ? 'شاهد إعلاناً'
+                      : (failed ? 'إعادة المحاولة' : 'جاري تجهيز الإعلان...'),
                   style: const TextStyle(
                       fontSize: 16, fontWeight: FontWeight.w800)),
             ),
