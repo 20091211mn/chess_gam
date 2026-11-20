@@ -17,6 +17,7 @@ dependencies:
   firebase_core: any
   firebase_auth: any
   cloud_firestore: any
+  nearby_connections: any
 
 flutter:
   uses-material-design: true

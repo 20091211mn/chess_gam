@@ -4,16 +4,19 @@ on:
     branches: [main]
     paths-ignore:
       - 'server/**'
+      - 'website/**'
   workflow_dispatch:
 
 jobs:
   # Android variants:
-  #   full = ads + store + Firebase online | nofb = ads + store, no online | lite = nothing extra
+  #   full = ads + store + Firebase online + Bluetooth
+  #   nobt = full without Bluetooth (safe fallback if the Bluetooth plugin breaks the build)
+  #   nofb = ads + store, no online   |   lite = nothing extra
   android:
     strategy:
       fail-fast: false
       matrix:
-        variant: [full, nofb, lite]
+        variant: [full, nobt, nofb, lite]
     runs-on: ubuntu-latest
     env:
       VARIANT: ${{ matrix.variant }}
@@ -32,20 +35,25 @@ jobs:
           import os
           v=os.environ['VARIANT']
           s=open('pubspec.yaml').read()
+          def drop(text, names):
+              return '\n'.join(l for l in text.split('\n') if not any(l.startswith('  '+n+':') for n in names))
           if v=='lite':
               s=s.replace('  google_mobile_ads: ^9.1.0','  google_mobile_ads:\n    path: stubs/google_mobile_ads')
               s=s.replace('  in_app_purchase: ^3.2.0','  in_app_purchase:\n    path: stubs/in_app_purchase')
           if v in ('lite','nofb'):
-              lines=[l for l in s.split('\n') if not any(l.startswith('  '+d+':') for d in ('firebase_core','firebase_auth','cloud_firestore'))]
-              s='\n'.join(lines)
+              s=drop(s,['firebase_core','firebase_auth','cloud_firestore'])
               open('lib/backend_impl.dart','w').write("export 'backend_none.dart';\n")
               os.remove('lib/backend_firebase.dart')
               os.remove('lib/firebase_options_gen.dart')
+          if v!='full':
+              s=drop(s,['nearby_connections'])
+              open('lib/link_impl.dart','w').write("export 'link_none.dart';\n")
+              os.remove('lib/link_nearby.dart')
           open('pubspec.yaml','w').write(s)
           PY
           cat pubspec.yaml
       - name: Firebase config (from google-services.json)
-        if: ${{ matrix.variant == 'full' }}
+        if: ${{ matrix.variant == 'full' || matrix.variant == 'nobt' }}
         run: |
           python3 .github/gen_firebase.py android
           cat lib/firebase_options_gen.dart | sed 's/apiKey: .*/apiKey: (hidden),/'
@@ -57,10 +65,18 @@ jobs:
           v=os.environ['VARIANT']
           p='android/app/src/main/AndroidManifest.xml'
           s=open(p).read()
-          s=s.replace('<application','<uses-permission android:name="android.permission.INTERNET"/>\n    <application android:usesCleartextTraffic="true"',1)
+          perms='<uses-permission android:name="android.permission.INTERNET"/>'
+          if v in ('full','nobt','nofb'):
+              perms+='\n    <uses-permission android:name="com.google.android.gms.permission.AD_ID"/>'
+          if v=='full':
+              for pm in ['ACCESS_WIFI_STATE','CHANGE_WIFI_STATE','ACCESS_COARSE_LOCATION','ACCESS_FINE_LOCATION','BLUETOOTH_ADVERTISE','BLUETOOTH_CONNECT','BLUETOOTH_SCAN','NEARBY_WIFI_DEVICES']:
+                  perms+='\n    <uses-permission android:name="android.permission.'+pm+'"/>'
+              perms+='\n    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>'
+              perms+='\n    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>'
+          s=s.replace('<application',perms+'\n    <application android:usesCleartextTraffic="true"',1)
           s=re.sub(r'android:label="[^"]*"','android:label="Chess"',s,count=1)
-          if v in ('full','nofb'):
-              s=s.replace('</application>','<meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-7019939648590037~6451390449"/>\n    </application>',1)
+          if v in ('full','nobt','nofb'):
+              s=s.replace('</application>','<meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="ca-app-pub-7019939648590037~6451390449"/>\n        <meta-data android:name="com.google.android.gms.ads.flag.OPTIMIZE_INITIALIZATION" android:value="true"/>\n        <meta-data android:name="com.google.android.gms.ads.flag.OPTIMIZE_AD_LOADING" android:value="true"/>\n    </application>',1)
           open(p,'w').write(s)
           PY
           cat android/app/src/main/AndroidManifest.xml
@@ -102,7 +118,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [full, nofb, lite]
+        variant: [full, nobt, nofb, lite]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -131,7 +147,7 @@ jobs:
           path: screen.png
           if-no-files-found: ignore
 
-  # iPhone (stable): no ads/store/online plugins
+  # iPhone (stable): no ads/store/online/Bluetooth plugins
   ios:
     runs-on: macos-latest
     steps:
@@ -139,18 +155,21 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-      - name: Use stub plugins (no ads, no store, no online)
+      - name: Use stub plugins (no ads, no store, no online, no Bluetooth)
         run: |
           python3 - <<'PY'
           import os
           s=open('pubspec.yaml').read()
           s=s.replace('  in_app_purchase: ^3.2.0','  in_app_purchase:\n    path: stubs/in_app_purchase')
           s=s.replace('  google_mobile_ads: ^9.1.0','  google_mobile_ads:\n    path: stubs/google_mobile_ads')
-          lines=[l for l in s.split('\n') if not any(l.startswith('  '+d+':') for d in ('firebase_core','firebase_auth','cloud_firestore'))]
-          open('pubspec.yaml','w').write('\n'.join(lines))
+          names=('firebase_core','firebase_auth','cloud_firestore','nearby_connections')
+          s='\n'.join(l for l in s.split('\n') if not any(l.startswith('  '+d+':') for d in names))
+          open('pubspec.yaml','w').write(s)
           open('lib/backend_impl.dart','w').write("export 'backend_none.dart';\n")
+          open('lib/link_impl.dart','w').write("export 'link_none.dart';\n")
           os.remove('lib/backend_firebase.dart')
           os.remove('lib/firebase_options_gen.dart')
+          os.remove('lib/link_nearby.dart')
           PY
           cat pubspec.yaml
       - run: flutter create --platforms=ios --project-name chess_game --org com.shatranj .
@@ -177,13 +196,17 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-      - name: Stub ads/store, keep Firebase
+      - name: Stub ads/store/Bluetooth, keep Firebase
         run: |
           python3 - <<'PY'
+          import os
           s=open('pubspec.yaml').read()
           s=s.replace('  in_app_purchase: ^3.2.0','  in_app_purchase:\n    path: stubs/in_app_purchase')
           s=s.replace('  google_mobile_ads: ^9.1.0','  google_mobile_ads:\n    path: stubs/google_mobile_ads')
+          s='\n'.join(l for l in s.split('\n') if not l.startswith('  nearby_connections:'))
           open('pubspec.yaml','w').write(s)
+          open('lib/link_impl.dart','w').write("export 'link_none.dart';\n")
+          os.remove('lib/link_nearby.dart')
           PY
           python3 .github/gen_firebase.py ios
       - run: flutter create --platforms=ios --project-name chess_game --org com.shatranj .

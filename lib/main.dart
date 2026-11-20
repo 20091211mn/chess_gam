@@ -12,6 +12,8 @@ import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'backend_api.dart';
 import 'backend_impl.dart';
+import 'backend_bt.dart';
+import 'link_impl.dart' show linkSupported;
 
 // ───────────── online server (change after you deploy it) ─────────────
 const kServerUrl = 'wss://YOUR-SERVER.onrender.com';
@@ -469,6 +471,7 @@ class OnlineGame {
   int min = 10;
   int inc = 0;
   String cat = 'blitz';
+  bool bt = false;
 
   void apply(Map m) {
     color = m['color'] == 'b' ? 'b' : 'w';
@@ -483,6 +486,7 @@ class OnlineGame {
     min = (m['min'] as num?)?.toInt() ?? min;
     inc = (m['inc'] as num?)?.toInt() ?? inc;
     cat = (m['cat'] ?? cat).toString();
+    bt = m['bt'] == true;
   }
 }
 
@@ -593,6 +597,10 @@ final GlobalKey<NavigatorState> navKey = GlobalKey<NavigatorState>();
 
 class Hub {
   static Backend? be;
+  static Backend? bt;
+  static bool btActive = false;
+  static String btStatus = '';
+  static List btPeers = [];
   static bool want = false;
   static bool inGame = false;
   static bool _up = false;
@@ -636,8 +644,37 @@ class Hub {
   }
 
   static void send(Map m) {
+    if (btActive && bt != null) {
+      bt!.send(m);
+      if (m['t'] == 'leave') {
+        btActive = false;
+        tick.value++;
+      }
+      return;
+    }
     ensure();
     be?.send(m);
+  }
+
+  static void btStart() {
+    btStop();
+    final b = createBtBackend();
+    bt = b;
+    btActive = true;
+    b.start((m) {
+      if (!identical(bt, b)) return;
+      _onMsg(m);
+    });
+  }
+
+  static void btStop() {
+    btActive = false;
+    final old = bt;
+    bt = null;
+    btStatus = '';
+    btPeers = [];
+    old?.stop();
+    tick.value++;
   }
 
   static void reset() {
@@ -823,6 +860,19 @@ class Hub {
         } else if (inGame) {
           pending.add(m);
         }
+        break;
+      case 'bt_status':
+        btStatus = (m['text'] ?? '').toString();
+        tick.value++;
+        break;
+      case 'bt_peers':
+        btPeers = (m['list'] as List?) ?? [];
+        tick.value++;
+        break;
+      case 'bt_error':
+        btStatus = 'خطأ: ${m['msg']}';
+        toast('خطأ في البلوتوث: ${m['msg']}');
+        tick.value++;
         break;
       case 'unavailable':
         _up = false;
@@ -1066,6 +1116,9 @@ class _MenuPageState extends State<MenuPage> {
                   () => _go(const OnlinePage())),
               bigButton('الأصدقاء', 'أضف أصدقاءك وتحدَّهم لمباراة',
                   () => _go(const FriendsPage()),
+                  alt: true),
+              bigButton('اللعب عبر البلوتوث', 'مع صديق قريب بدون إنترنت',
+                  () => _go(const BluetoothPage()),
                   alt: true),
               bigButton('العب ضد الكمبيوتر', 'لاعبون بتقييمات من 400 إلى 2200',
                   () => _go(const BotsPage()),
@@ -3178,7 +3231,7 @@ class _GamePageState extends State<GamePage> {
     final note = rated
         ? 'تقييمك (${kCatLabel[net.cat]}): $rating (${delta >= 0 ? '+' : ''}$delta)'
         : (result == '*' ? '' : 'مباراة غير مصنفة');
-    _end(text, outcome: oc, tag: result, note: note);
+    _end(text, outcome: widget.og!.bt ? null : oc, tag: result, note: note);
   }
 
   String _sq(int r, int f) => '${_files[f]}${8 - r}';
@@ -5976,6 +6029,151 @@ class PrivacyPage extends StatelessWidget {
               Hub.toast('تم نسخ الرابط');
             },
             child: const Text('نسخ الرابط')),
+      ]),
+    );
+  }
+}
+
+// ───────────── Bluetooth game (two phones, no internet) ─────────────
+class BluetoothPage extends StatefulWidget {
+  const BluetoothPage({super.key});
+  @override
+  State<BluetoothPage> createState() => _BluetoothPageState();
+}
+
+class _BluetoothPageState extends State<BluetoothPage> {
+  String mode = '';
+
+  void _r() {
+    if (!mounted) return;
+    setState(() {
+      if (!Hub.btActive && mode.isNotEmpty) mode = '';
+    });
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    Hub.tick.addListener(_r);
+  }
+
+  @override
+  void dispose() {
+    Hub.tick.removeListener(_r);
+    Hub.btStop();
+    super.dispose();
+  }
+
+  void _host() {
+    final tc = kTCs[Prefs.tcIdx];
+    Hub.btStart();
+    Hub.bt!.send({'t': 'bt_host', 'name': Prefs.name, 'min': tc.min, 'inc': tc.inc});
+    setState(() => mode = 'host');
+  }
+
+  void _search() {
+    Hub.btStart();
+    Hub.bt!.send({'t': 'bt_search', 'name': Prefs.name});
+    setState(() => mode = 'search');
+  }
+
+  void _cancel() {
+    Hub.btStop();
+    setState(() => mode = '');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final supported = Platform.isAndroid && linkSupported();
+    return Scaffold(
+      appBar: AppBar(
+          backgroundColor: kPanel, title: const Text('اللعب عبر البلوتوث')),
+      body: ListView(padding: const EdgeInsets.all(16), children: [
+        Container(
+          padding: const EdgeInsets.all(14),
+          margin: const EdgeInsets.only(bottom: 14),
+          decoration: BoxDecoration(
+              color: kPanel, borderRadius: BorderRadius.circular(10)),
+          child: const Text(
+              'العب مع صديق قريب بدون إنترنت.\n'
+              '1) فعّل البلوتوث والموقع (GPS) على الجهازين.\n'
+              '2) أحدكما يضغط "استضف مباراة" والآخر "ابحث عن صديق".\n'
+              '3) اختر اسم صديقك من القائمة وانتظر بدء المباراة.\n'
+              'يتطلب خدمات Google Play. المباراة غير مصنفة.',
+              style: TextStyle(fontSize: 13, height: 1.7, color: Colors.white70)),
+        ),
+        if (!supported)
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+                color: const Color(0xFF5A3A12),
+                borderRadius: BorderRadius.circular(10)),
+            child: const Text('اللعب عبر البلوتوث غير متاح في هذه النسخة.',
+                style: TextStyle(fontSize: 14)),
+          )
+        else ...[
+          if (mode.isEmpty) ...[
+            TcPicker(onChanged: () => setState(() {})),
+            bigButton('استضف مباراة', 'الوقت: ${kTCs[Prefs.tcIdx].label}', _host),
+            bigButton('ابحث عن صديق', 'للانضمام لمباراة صديقك', _search,
+                alt: true),
+          ] else ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              margin: const EdgeInsets.only(bottom: 12),
+              decoration: BoxDecoration(
+                  color: kPanel, borderRadius: BorderRadius.circular(10)),
+              child: Column(children: [
+                const CircularProgressIndicator(),
+                const SizedBox(height: 12),
+                Text(
+                    Hub.btStatus.isEmpty
+                        ? (mode == 'host'
+                            ? 'بانتظار صديقك...'
+                            : 'جاري البحث...')
+                        : Hub.btStatus,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 14)),
+              ]),
+            ),
+            if (mode == 'search') ...[
+              if (Hub.btPeers.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: Text('لم يظهر أحد بعد. اطلب من صديقك أن يضغط "استضف مباراة".',
+                      style: TextStyle(color: Colors.white54, fontSize: 13)),
+                ),
+              for (final pr in Hub.btPeers)
+                if (pr is Map)
+                  GestureDetector(
+                    onTap: () {
+                      Hub.bt?.send({
+                        't': 'bt_connect',
+                        'id': pr['id'],
+                        'name': Prefs.name
+                      });
+                    },
+                    child: Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                          color: kPanel, borderRadius: BorderRadius.circular(8)),
+                      child: Row(children: [
+                        const Icon(Icons.bluetooth, color: kGreen),
+                        const SizedBox(width: 10),
+                        Expanded(
+                            child: Text('${pr['name']}',
+                                style: const TextStyle(
+                                    fontSize: 16, fontWeight: FontWeight.w700))),
+                        const Text('انضم',
+                            style: TextStyle(color: kGreen, fontWeight: FontWeight.w800)),
+                      ]),
+                    ),
+                  ),
+            ],
+            TextButton(onPressed: _cancel, child: const Text('إلغاء')),
+          ],
+        ],
       ]),
     );
   }
